@@ -1,0 +1,34 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hello-world-hpa
+  namespace: hello
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hello-world
+  minReplicas: 1 
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 40 
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0    # Scale up IMMEDIATELY
+      policies:
+      - type: Percent
+        value: 100                     # Double pods if needed
+        periodSeconds: 1              # Check every 15 seconds
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 0   # Wait only 15 seconds (was 60)
+      policies:
+      - type: Pods
+        value: 5                       # Remove 5 pods at a time
+        periodSeconds: 1               # Every 2 seconds
+      selectPolicy: Max                # Aggressive scale down
