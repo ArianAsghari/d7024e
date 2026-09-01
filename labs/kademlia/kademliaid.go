@@ -6,7 +6,7 @@ import (
 )
 
 // the static number of bytes in a KademliaID
-const IDLength = 20
+const IDLength = 32 // 256 bit / 8 bits/byte = 32 bytes
 
 // type definition of a KademliaID
 type KademliaID [IDLength]byte
@@ -53,7 +53,7 @@ func (kademliaID KademliaID) Equals(otherKademliaID *KademliaID) bool {
 	return true
 }
 
-// CalcDistance returns a new instance of a KademliaID that is built 
+// CalcDistance returns a new instance of a KademliaID that is built
 // through a bitwise XOR operation betweeen kademliaID and target
 func (kademliaID KademliaID) CalcDistance(target *KademliaID) *KademliaID {
 	result := KademliaID{}
