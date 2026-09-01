@@ -162,11 +162,58 @@ Basic methodology rules:
 Note that some of these experiments are affected by your RPC timeout/retry policy (i.e. how long you wait for a response and whether/how often you retry), which is therefore important to document clearly.
 
 
-## Part 2 - Package Registry (coming soon)
+## Part 2 - Package Registry
 
 In part 2, we build additional functionality on top of the data store developed in part 1.
+As in part 1, this document focuses on the requirements.
+The design itself is explained separately in [PART2-DESIGN](PART2-DESIGN.md) (just like part 1 outsourced the actual system design to the Kademlia paper and other resources).
 
-**This document will be updated shortly to include more details.**
+Nodes must
+1. Accept only package publications by the domain owner (i.e. update the latest-version pointer for a package in the domain).
+2. Refuse to fork history (i.e. not fork the chain/linked-list of version records).
+3. Refuse to roll back updates (updating the latest-version pointer to an older version record).
+4. Catch up when they detect that they have fallen behind (i.e. that they must have missed some version update).
+
+You are encouraged to set up DNS on your test network such that your nodes can make actual DNS queries.
+However, you are also allowed to fake the DNS-based ownership verification.
+(You probably want to hide the verification behind an interface anyway.)
+
+Versions could be simple integers or `major.minor.patch` (semantic versioning), or even something else.
+The important requirement is that they have a total order.
+
+The choice of signature scheme (e.g. ED25519 or RSA) and how to encode the PK in the TXT record are up to you.
+Clearly document your choices.
+
+
+
+
+### User interface
+
+We need a user interface similar to the one in part 1. The following commands must be supported (**in addition to the commands from part 1**):
+
+- `publish [--force] [--prev=PREVIOUS-VERSION] DOMAIN:PACKAGE:VERSION FILENAME` - publish the package stored in `FILENAME`
+- `install DOMAIN:PACKAGE:VERSION` - download the specified version (which may be "latest") of the specified package
+- `show DOMAIN:PACKAGE` - show the version chain of the specified package
+- `show dns DOMAIN` - show the PK of the owner of `DOMAIN` (if any)
+
+We need the `--force` flag for testing/demonstration.
+Without the `--force`, your program should check that the new version is valid relative to previous versions (before attempting the upload).
+With `--force`, those checks are ignored, and the node happily attempts to make an invalid version update (which other nodes should of course reject).
+By default, `publish` uses the appropriate previous version of the package (which is none when publishing the first version).
+The optional `--prev=PREVIOUS-VERSION` specifies the previous version explicitly.
+(`--force` and `--prev` can be combined to *attempt* to create invalid updates like forks, cycles, roll-back.)
+
+For `show dns DOMAIN` it doesn't matter if you are doing actual DNS lookups or if you are faking it. What matters is that you can show what the node believes about domain ownership.
+
+Now `show ds` should interpret and (concisely) show version records (and latest-pointers), not just key hashes.
+
+
+### Engineering
+
+The requirements from part 1 still apply, e.g.:
+- 80 % test coverage
+- Test cases with 1000+ nodes on the simulated network
+- etc.
 
 
 ## Report
@@ -203,5 +250,6 @@ By the last sprint, you must have completed all mandatory requirements, includin
 In the first sprint, we will specifically check your understanding of Kademlia.
 Members of the group will be selected at random to answer various questions about Kademlia.
 We will also check that you have managed to set up containerization and that nodes (containers) are able to communicate.
+In sprint 3 (at the latest), you are expected to be able to answer questions about the design of part 2 (such as the questions posed at the end of [PART2-DESIGN](PART2-DESIGN.md)).
 Other than that, how you distribute your work across the sprints is up to you.
 See the [TIPS](TIPS.md) for a rough suggestion.
