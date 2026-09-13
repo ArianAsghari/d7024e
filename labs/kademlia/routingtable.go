@@ -1,27 +1,43 @@
 package kademlia
 
-const bucketSize = 20
-
+// DefaultK is both the default bucket capacity and replication factor.
+const DefaultK = 10
 
 // RoutingTable definition
 // keeps a refrence contact of me and an array of buckets
 type RoutingTable struct {
 	me      Contact
+	k       int
 	buckets [IDLength * 8]*bucket
 }
 
 // NewRoutingTable returns a new instance of a RoutingTable
-func NewRoutingTable(me Contact) *RoutingTable {
-	routingTable := &RoutingTable{}
-	for i := 0; i < IDLength*8; i++ {
-		routingTable.buckets[i] = newBucket()
+// An optional k overrides DefaultK, which makes the parameter easy to adjust
+// while preserving the starter code's one-argument constructor.
+func NewRoutingTable(me Contact, sizes ...int) *RoutingTable {
+	k := DefaultK
+	if len(sizes) > 0 && sizes[0] > 0 {
+		k = sizes[0]
 	}
-	routingTable.me = me
+
+	routingTable := &RoutingTable{me: me, k: k}
+	for i := 0; i < IDLength*8; i++ {
+		routingTable.buckets[i] = newBucket(k)
+	}
 	return routingTable
+}
+
+// K returns the routing table's configured bucket capacity.
+func (routingTable *RoutingTable) K() int {
+	return routingTable.k
 }
 
 // AddContact add a new contact to the correct Bucket
 func (routingTable *RoutingTable) AddContact(contact Contact) {
+	if contact.ID == nil || routingTable.me.ID == nil || contact.ID.Equals(routingTable.me.ID) {
+		return
+	}
+
 	bucketIndex := routingTable.getBucketIndex(contact.ID)
 	bucket := routingTable.buckets[bucketIndex]
 	bucket.AddContact(contact)
@@ -29,21 +45,13 @@ func (routingTable *RoutingTable) AddContact(contact Contact) {
 
 // FindClosestContacts finds the count closest Contacts to the target in the RoutingTable
 func (routingTable *RoutingTable) FindClosestContacts(target *KademliaID, count int) []Contact {
+	if target == nil || count <= 0 {
+		return []Contact{}
+	}
+
 	var candidates ContactCandidates
-	bucketIndex := routingTable.getBucketIndex(target)
-	bucket := routingTable.buckets[bucketIndex]
-
-	candidates.Append(bucket.GetContactAndCalcDistance(target))
-
-	for i := 1; (bucketIndex-i >= 0 || bucketIndex+i < IDLength*8) && candidates.Len() < count; i++ {
-		if bucketIndex-i >= 0 {
-			bucket = routingTable.buckets[bucketIndex-i]
-			candidates.Append(bucket.GetContactAndCalcDistance(target))
-		}
-		if bucketIndex+i < IDLength*8 {
-			bucket = routingTable.buckets[bucketIndex+i]
-			candidates.Append(bucket.GetContactAndCalcDistance(target))
-		}
+	for _, bucket := range routingTable.buckets {
+		candidates.Append(bucket.GetContactAndCalcDistance(target))
 	}
 
 	candidates.Sort()
