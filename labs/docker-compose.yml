@@ -12,8 +12,11 @@ services:
     stdin_open: true
     tty: true
     deploy:
+      # 5 replicas for fast local dev. The lab requires demonstrating at
+      # least 50; scale up for that with:
+      #   docker service scale kademlia_kademliaNodes=50
       mode: replicated
-      replicas: 5  
+      replicas: 5
 #        resources:
 #           limits:
 #              cpus: "0.1"
