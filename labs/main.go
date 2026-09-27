@@ -59,11 +59,14 @@ func main() {
 
 	fmt.Printf("Starting Kademlia node %s\n", me.String())
 
-	// kademlia.Listen is currently a no-op stub (network.go). Once it's
-	// implemented to actually receive UDP RPCs, this call will block (or
-	// spawn its own goroutine) as appropriate. The sleep loop below just
-	// keeps the container alive in the meantime so it doesn't exit.
-	kademlia.Listen(ip, port)
+	routingTable := kademlia.NewRoutingTable(me)
+	network := kademlia.NewNetwork(me)
+	node := kademlia.NewKademlia(routingTable, network)
+	network.AttachKademlia(node)
+	if err := network.Listen(ip, port); err != nil {
+		panic(err)
+	}
+	defer network.Close()
 
 	for {
 		time.Sleep(time.Hour)
