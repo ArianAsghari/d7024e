@@ -230,6 +230,26 @@ func (kademlia *Kademlia) StoreValue(key *KademliaID, data []byte) error {
 	return nil
 }
 
+// DataEntry is a single locally stored key-value pair, exposed for display
+// (e.g. the CLI's "show ds" command).
+type DataEntry struct {
+	Key   string
+	Value []byte
+}
+
+// Entries returns every locally stored key-value pair, sorted by key.
+func (kademlia *Kademlia) Entries() []DataEntry {
+	kademlia.dataMu.RLock()
+	defer kademlia.dataMu.RUnlock()
+
+	entries := make([]DataEntry, 0, len(kademlia.data))
+	for key, value := range kademlia.data {
+		entries = append(entries, DataEntry{Key: key, Value: cloneBytes(value)})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
+	return entries
+}
+
 func (kademlia *Kademlia) localValue(key *KademliaID) ([]byte, bool) {
 	kademlia.dataMu.RLock()
 	defer kademlia.dataMu.RUnlock()

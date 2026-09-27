@@ -32,6 +32,34 @@ func (routingTable *RoutingTable) K() int {
 	return routingTable.k
 }
 
+// Me returns this node's own contact.
+func (routingTable *RoutingTable) Me() Contact {
+	return routingTable.me
+}
+
+// RoutingTableBucket is a single non-empty k-bucket, exposed for display
+// (e.g. the CLI's "show rt" command).
+type RoutingTableBucket struct {
+	Index    int
+	Contacts []Contact
+}
+
+// Buckets returns every non-empty k-bucket, ordered by bucket index (nearest
+// bit-distance from this node first). Empty buckets are omitted.
+func (routingTable *RoutingTable) Buckets() []RoutingTableBucket {
+	var result []RoutingTableBucket
+	for i, bucket := range routingTable.buckets {
+		if bucket.Len() == 0 {
+			continue
+		}
+		result = append(result, RoutingTableBucket{
+			Index:    i,
+			Contacts: bucket.GetContactAndCalcDistance(routingTable.me.ID),
+		})
+	}
+	return result
+}
+
 // AddContact add a new contact to the correct Bucket
 func (routingTable *RoutingTable) AddContact(contact Contact) {
 	if contact.ID == nil || routingTable.me.ID == nil || contact.ID.Equals(routingTable.me.ID) {
