@@ -3,14 +3,18 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"d7024e/kademlia"
 )
@@ -52,25 +56,100 @@ func idFromAddress(address string) *kademlia.KademliaID {
 }
 
 func main() {
-	ip := getOutboundIP()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runNode(ctx, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runNode(ctx context.Context, in io.Reader, out io.Writer) error {
+	ip := os.Getenv("BIND_IP")
+	if ip == "" {
+		ip = getOutboundIP()
+	}
+	if parsed := net.ParseIP(ip); parsed == nil || parsed.IsUnspecified() {
+		return fmt.Errorf("BIND_IP must be a concrete local IP address, got %q", ip)
+	}
 	port := getPort()
-	address := fmt.Sprintf("%s:%d", ip, port)
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("PORT must be between 1 and 65535")
+	}
+	interval := kademlia.DefaultReplicationInterval
+	if raw := os.Getenv("REPLICATION_INTERVAL"); raw != "" {
+		var err error
+		interval, err = time.ParseDuration(raw)
+		if err != nil || interval <= 0 {
+			return fmt.Errorf("REPLICATION_INTERVAL must be a positive duration, e.g. 30s or 1h")
+		}
+	}
+	address := net.JoinHostPort(ip, strconv.Itoa(port))
 
 	id := idFromAddress(address)
 	me := kademlia.NewContact(id, address)
 
-	fmt.Printf("Starting Kademlia node %s\n", me.String())
+	fmt.Fprintf(out, "Starting Kademlia node %s\n", me.String())
 
 	routingTable := kademlia.NewRoutingTable(me)
 	network := kademlia.NewNetwork(me)
 	node := kademlia.NewKademlia(routingTable, network)
 	network.AttachKademlia(node)
 	if err := network.Listen(ip, port); err != nil {
-		panic(err)
+		return err
 	}
 	defer network.Close()
 
-	runCLI(os.Stdin, os.Stdout, routingTable, node, network)
+	if address := os.Getenv("BOOTSTRAP"); address != "" {
+		bootstrap, err := contactFromAddress(address)
+		if err != nil {
+			return fmt.Errorf("bootstrap address: %w", err)
+		}
+		if err := node.Join(bootstrap); err != nil {
+			return fmt.Errorf("join network: %w", err)
+		}
+		fmt.Fprintf(out, "Joined via %s\n", bootstrap.Address)
+	}
+
+	replicationCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = node.RunRepublisher(replicationCtx, interval)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	if os.Getenv("HEADLESS") == "1" {
+		<-ctx.Done()
+	} else {
+		// Closing stdin interrupts a scanner blocked at the interactive prompt
+		// on SIGINT/SIGTERM. In-memory readers used by tests need no close.
+		stopClose := context.AfterFunc(ctx, func() {
+			if closer, ok := in.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		})
+		defer stopClose()
+		runCLI(in, out, routingTable, node, network)
+	}
+	return nil
+}
+
+// Resolve DNS before hashing so a bootstrap service name has the same ID as
+// the concrete IP:port advertised by the node itself.
+func contactFromAddress(address string) (kademlia.Contact, error) {
+	resolved, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return kademlia.Contact{}, err
+	}
+	if resolved.IP == nil || resolved.IP.IsUnspecified() || resolved.Port < 1 {
+		return kademlia.Contact{}, fmt.Errorf("expected a reachable IP:PORT or hostname:PORT")
+	}
+	canonical := resolved.String()
+	return kademlia.NewContact(idFromAddress(canonical), canonical), nil
 }
 
 // runCLI reads newline-terminated commands from in and writes prompts/output
@@ -116,13 +195,32 @@ func dispatchCommand(out io.Writer, routingTable *kademlia.RoutingTable, node *k
 			fmt.Fprintln(out, "usage: ping IP:PORT")
 			return true
 		}
-		target := kademlia.NewContact(idFromAddress(args[0]), args[0])
+		target, err := contactFromAddress(args[0])
+		if err != nil {
+			fmt.Fprintf(out, "ping failed: %v\n", err)
+			return true
+		}
 		rtt, err := network.SendPingMessage(&target)
 		if err != nil {
 			fmt.Fprintf(out, "ping failed: %v\n", err)
 			return true
 		}
 		fmt.Fprintf(out, "pong from %s in %s\n", args[0], rtt)
+
+	case "join":
+		if len(args) != 1 {
+			fmt.Fprintln(out, "usage: join IP:PORT")
+			return true
+		}
+		bootstrap, err := contactFromAddress(args[0])
+		if err == nil {
+			err = node.Join(bootstrap)
+		}
+		if err != nil {
+			fmt.Fprintf(out, "join failed: %v\n", err)
+		} else {
+			fmt.Fprintf(out, "joined via %s\n", bootstrap.Address)
+		}
 
 	case "put":
 		if len(args) != 1 {

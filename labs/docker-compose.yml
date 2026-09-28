@@ -7,14 +7,31 @@
 
 version: "3"
 services:
+  bootstrap:
+    image: kadlab:latest
+    environment:
+      HEADLESS: "1"
+      REPLICATION_INTERVAL: "1h"
+    deploy:
+      replicas: 1
+      # Resolve the node's actual IP, rather than a virtual service IP whose
+      # hash would disagree with its advertised node ID.
+      endpoint_mode: dnsrr
+    networks:
+      - kademlia_network
   kademliaNodes:
     image: kadlab:latest # Make sure your Docker image has this name.
     stdin_open: true
     tty: true
+    environment:
+      HEADLESS: "1"
+      BOOTSTRAP: "bootstrap:8000"
+      REPLICATION_INTERVAL: "1h"
     deploy:
       # 5 replicas for fast local dev. The lab requires demonstrating at
       # least 50; scale up for that with:
-      #   docker service scale kademlia_kademliaNodes=50
+      #   docker service scale kademlia_kademliaNodes=49
+      # Together with the bootstrap, that is 50 nodes.
       mode: replicated
       replicas: 5
 #        resources:
@@ -33,4 +50,4 @@ services:
       
 networks:
   kademlia_network:
-
+    attachable: true

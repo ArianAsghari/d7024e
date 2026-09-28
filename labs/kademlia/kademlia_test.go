@@ -3,6 +3,7 @@ package kademlia
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 type fakeRPCClient struct {
@@ -18,6 +19,10 @@ type storeCall struct {
 	address string
 	key     KademliaID
 	data    []byte
+}
+
+func (fake *fakeRPCClient) SendPingMessage(contact *Contact) (time.Duration, error) {
+	return time.Millisecond, fake.requestError[contact.Address]
 }
 
 func (fake *fakeRPCClient) SendFindContactMessage(contact *Contact, _ *KademliaID) ([]Contact, error) {

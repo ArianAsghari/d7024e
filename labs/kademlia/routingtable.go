@@ -1,5 +1,7 @@
 package kademlia
 
+import "time"
+
 // DefaultK is both the default bucket capacity and replication factor.
 const DefaultK = 10
 
@@ -9,6 +11,9 @@ type RoutingTable struct {
 	me      Contact
 	k       int
 	buckets [IDLength * 8]*bucket
+	// Configured by NewKademlia before the node is used concurrently, like me
+	// and k. Bucket contents have their own locks.
+	ping func(*Contact) (time.Duration, error)
 }
 
 // NewRoutingTable returns a new instance of a RoutingTable
@@ -44,8 +49,8 @@ type RoutingTableBucket struct {
 	Contacts []Contact
 }
 
-// Buckets returns every non-empty k-bucket, ordered by bucket index (nearest
-// bit-distance from this node first). Empty buckets are omitted.
+// Buckets returns every non-empty k-bucket, ordered by bucket index (farthest
+// distance range first). Empty buckets are omitted.
 func (routingTable *RoutingTable) Buckets() []RoutingTableBucket {
 	var result []RoutingTableBucket
 	for i, bucket := range routingTable.buckets {
@@ -68,7 +73,7 @@ func (routingTable *RoutingTable) AddContact(contact Contact) {
 
 	bucketIndex := routingTable.getBucketIndex(contact.ID)
 	bucket := routingTable.buckets[bucketIndex]
-	bucket.AddContact(contact)
+	bucket.AddContact(contact, routingTable.ping)
 }
 
 // FindClosestContacts finds the count closest Contacts to the target in the RoutingTable

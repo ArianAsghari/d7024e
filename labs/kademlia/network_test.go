@@ -104,12 +104,12 @@ func TestNetworkRetriesAndTimesOut(t *testing.T) {
 	}
 }
 
-func startTestNode(t *testing.T, id *KademliaID) (*Network, *Kademlia, Contact) {
+func startTestNode(t *testing.T, id *KademliaID, sizes ...int) (*Network, *Kademlia, Contact) {
 	t.Helper()
 
 	address := reserveUDPAddress(t)
 	me := NewContact(id, address)
-	routingTable := NewRoutingTable(me)
+	routingTable := NewRoutingTable(me, sizes...)
 	network := NewNetwork(me)
 	node := NewKademlia(routingTable, network)
 	network.AttachKademlia(node)
@@ -129,6 +129,25 @@ func startTestNode(t *testing.T, id *KademliaID) (*Network, *Kademlia, Contact) 
 	}
 
 	return network, node, me
+}
+
+func TestNetworkEvictionCanRefreshSameBucket(t *testing.T) {
+	transport, node, me := startTestNode(t, testID(0), 1)
+	defer transport.Close()
+	peerTransport, peer, peerContact := startTestNode(t, testID(8), 1)
+	defer peerTransport.Close()
+	node.routingTable.AddContact(peerContact)
+	peer.routingTable.AddContact(me)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		node.routingTable.AddContact(NewContact(testID(9), "new-contact"))
+	}()
+	waitFor(t, done)
+	contacts := node.routingTable.FindClosestContacts(me.ID, 1)
+	if len(contacts) != 1 || !contacts[0].ID.Equals(peerContact.ID) {
+		t.Fatal("live peer was evicted during a real UDP eviction probe")
+	}
 }
 
 func reserveUDPAddress(t *testing.T) string {

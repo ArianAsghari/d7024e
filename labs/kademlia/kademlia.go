@@ -8,6 +8,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"time"
 )
 
 var (
@@ -31,6 +32,7 @@ type FindDataResult struct {
 // RPCClient is the contract between the core Kademlia algorithm (Person B)
 // and the real or simulated network implementation (Person A).
 type RPCClient interface {
+	SendPingMessage(contact *Contact) (time.Duration, error)
 	SendFindContactMessage(contact *Contact, target *KademliaID) ([]Contact, error)
 	SendFindDataMessage(contact *Contact, hash *KademliaID) (FindDataResult, error)
 	SendStoreMessage(contact *Contact, hash *KademliaID, data []byte) error
@@ -48,7 +50,11 @@ type Kademlia struct {
 }
 
 // NewKademlia wires the core algorithm to a routing table and a network.
+// The table belongs to this node and must not yet be in concurrent use.
 func NewKademlia(routingTable *RoutingTable, network RPCClient) *Kademlia {
+	if routingTable != nil && network != nil {
+		routingTable.ping = network.SendPingMessage
+	}
 	return &Kademlia{
 		routingTable: routingTable,
 		network:      network,
@@ -96,9 +102,8 @@ func (kademlia *Kademlia) LookupContact(target *Contact) ([]Contact, error) {
 		}
 		kademlia.routingTable.AddContact(*next)
 
-		for _, contact := range contacts {
-			kademlia.routingTable.AddContact(contact)
-		}
+		// Referrals are candidates, not evidence that those peers are alive.
+		// Refresh routing-table recency only after a direct RPC succeeds.
 		kademlia.addCandidates(candidates, contacts)
 	}
 
@@ -162,9 +167,6 @@ func (kademlia *Kademlia) LookupData(hash string) ([]byte, *Contact, error) {
 			return value, &source, nil
 		}
 
-		for _, contact := range result.Contacts {
-			kademlia.routingTable.AddContact(contact)
-		}
 		kademlia.addCandidates(candidates, result.Contacts)
 	}
 

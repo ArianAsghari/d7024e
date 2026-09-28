@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -271,6 +272,7 @@ func TestDispatchCommandUsageErrors(t *testing.T) {
 		args []string
 	}{
 		{"ping", nil},
+		{"join", nil},
 		{"put", nil},
 		{"get", nil},
 		{"show", nil},
@@ -304,5 +306,119 @@ func TestRunCLIStopsAtEOFWithoutExit(t *testing.T) {
 	runCLI(in, &out, routingTable, node, network)
 	if strings.Contains(out.String(), "bye") {
 		t.Errorf("runCLI output = %q, should not print \"bye\" without an exit command", out.String())
+	}
+}
+
+func reserveTestPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := conn.LocalAddr().(*net.UDPAddr).Port
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func TestRunNodeJoinsAndReplicatesOverUDP(t *testing.T) {
+	for _, startup := range []bool{true, false} {
+		t.Run(map[bool]string{true: "BOOTSTRAP environment", false: "join command"}[startup], func(t *testing.T) {
+			peerPort := reserveTestPort(t)
+			peerAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(peerPort))
+			me := kademlia.NewContact(idFromAddress(peerAddress), peerAddress)
+			transport := kademlia.NewNetwork(me)
+			peer := kademlia.NewKademlia(kademlia.NewRoutingTable(me), transport)
+			transport.AttachKademlia(peer)
+			if err := transport.Listen("127.0.0.1", peerPort); err != nil {
+				t.Fatal(err)
+			}
+			defer transport.Close()
+			t.Setenv("BIND_IP", "127.0.0.1")
+			t.Setenv("PORT", strconv.Itoa(reserveTestPort(t)))
+			t.Setenv("REPLICATION_INTERVAL", "1h")
+			t.Setenv("HEADLESS", "")
+			t.Setenv("BOOTSTRAP", "")
+			commands := ""
+			if startup {
+				t.Setenv("BOOTSTRAP", peerAddress)
+			} else {
+				commands = "join " + peerAddress + "\n"
+			}
+			data := []byte("joined without manual ping")
+			filename := filepath.Join(t.TempDir(), "package.txt")
+			if err := os.WriteFile(filename, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			commands += "show rt\nput " + filename + "\nexit\n"
+			var out bytes.Buffer
+			if err := runNode(context.Background(), strings.NewReader(commands), &out); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.ToLower(out.String()), "joined via "+peerAddress) || !strings.Contains(out.String(), "bucket ") {
+				t.Fatalf("node did not join: %s", out.String())
+			}
+			// idFromAddress hashes arbitrary strings with the same SHA-256 used
+			// for data; here the input is the file contents, not a node address.
+			key := idFromAddress(string(data)).String()
+			got, source, err := peer.LookupData(key)
+			if err != nil || source != nil || !bytes.Equal(got, data) {
+				t.Fatalf("bootstrap's replica = %q, source %v, error %v", got, source, err)
+			}
+		})
+	}
+}
+
+func TestRunNodeRejectsInvalidConfiguration(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"BIND_IP", "invalid"}, {"BIND_IP", "0.0.0.0"},
+		{"PORT", "0"}, {"PORT", "65536"},
+		{"REPLICATION_INTERVAL", "never"}, {"REPLICATION_INTERVAL", "0s"},
+		{"BOOTSTRAP", "not-an-address"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			t.Setenv("BIND_IP", "127.0.0.1")
+			t.Setenv("PORT", strconv.Itoa(reserveTestPort(t)))
+			t.Setenv("REPLICATION_INTERVAL", "1h")
+			t.Setenv("BOOTSTRAP", "")
+			t.Setenv(tc.key, tc.value)
+			if err := runNode(context.Background(), strings.NewReader(""), &bytes.Buffer{}); err == nil {
+				t.Fatal("invalid configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestHeadlessNodeStopsWhenContextIsCanceled(t *testing.T) {
+	t.Setenv("BIND_IP", "127.0.0.1")
+	t.Setenv("PORT", strconv.Itoa(reserveTestPort(t)))
+	t.Setenv("BOOTSTRAP", "")
+	t.Setenv("HEADLESS", "1")
+	t.Setenv("REPLICATION_INTERVAL", "1ms")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runNode(ctx, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContactFromAddressAndInvalidJoin(t *testing.T) {
+	contact, err := contactFromAddress("127.0.0.1:8000")
+	if err != nil || contact.Address != "127.0.0.1:8000" || !contact.ID.Equals(idFromAddress(contact.Address)) {
+		t.Fatalf("contact = %v, %v", contact, err)
+	}
+	for _, address := range []string{"", "invalid", "0.0.0.0:8000", "127.0.0.1:0"} {
+		if _, err := contactFromAddress(address); err == nil {
+			t.Errorf("accepted invalid address %q", address)
+		}
+	}
+	rt, node, network := newTestNode(t)
+	for _, cmd := range []string{"join", "ping"} {
+		var out bytes.Buffer
+		dispatchCommand(&out, rt, node, network, cmd, []string{"invalid"})
+		if !strings.Contains(out.String(), "failed") {
+			t.Fatalf("invalid %s: %s", cmd, out.String())
+		}
 	}
 }

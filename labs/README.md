@@ -7,6 +7,9 @@ There are additional tips and resources that might be useful in [TIPS](TIPS.md).
 
 This description is a work in progress. Please report any errors you find.
 
+For this team's current implementation, setup commands, and a worked multi-node
+demo, see [Understanding and running the project](RUNNING.md).
+
 
 ## Introduction
 

@@ -145,7 +145,9 @@ func (network *Network) SendPingMessage(contact *Contact) (time.Duration, error)
 	if response.Type != rpcPingReply {
 		return 0, fmt.Errorf("%w: got %q", ErrRPCResponseType, response.Type)
 	}
-	return time.Since(start), nil
+	rtt := time.Since(start)
+	network.addContact(*contact)
+	return rtt, nil
 }
 
 // SendFindContactMessage performs a FIND_NODE RPC.
@@ -307,12 +309,6 @@ func (network *Network) handlePacket(conn *net.UDPConn, remote *net.UDPAddr, pac
 		return
 	}
 
-	if request.Sender != nil {
-		if sender, err := contactFromWire(*request.Sender); err == nil {
-			network.addContact(sender)
-		}
-	}
-
 	response := rpcMessage{RequestID: request.RequestID}
 	switch request.Type {
 	case rpcPing:
@@ -376,6 +372,14 @@ func (network *Network) handlePacket(conn *net.UDPConn, remote *net.UDPAddr, pac
 		return
 	}
 	_, _ = conn.WriteToUDP(payload, remote)
+	// Answer first: learning a new sender may PING a full bucket's oldest
+	// member. Delaying this reply behind that probe can cause false timeouts
+	// when nodes are simultaneously maintaining their routing tables.
+	if request.Sender != nil {
+		if sender, err := contactFromWire(*request.Sender); err == nil {
+			network.addContact(sender)
+		}
+	}
 }
 
 func (network *Network) getKademlia() *Kademlia {
