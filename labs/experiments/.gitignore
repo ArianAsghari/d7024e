@@ -1,0 +1,3 @@
+# Raw event logs are large (about 18 MB) and can be regenerated from the seeds:
+#   go run ./cmd/experiments -out experiments/results
+results/*.jsonl
