@@ -2,11 +2,13 @@ package kademlia
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeRPCClient struct {
+	mu           sync.Mutex
 	findContacts map[string][]Contact
 	findData     map[string]FindDataResult
 	requestError map[string]error
@@ -26,6 +28,8 @@ func (fake *fakeRPCClient) SendPingMessage(contact *Contact) (time.Duration, err
 }
 
 func (fake *fakeRPCClient) SendFindContactMessage(contact *Contact, _ *KademliaID) ([]Contact, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.contactCalls = append(fake.contactCalls, contact.Address)
 	if err := fake.requestError[contact.Address]; err != nil {
 		return nil, err
@@ -34,6 +38,8 @@ func (fake *fakeRPCClient) SendFindContactMessage(contact *Contact, _ *KademliaI
 }
 
 func (fake *fakeRPCClient) SendFindDataMessage(contact *Contact, _ *KademliaID) (FindDataResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.dataCalls = append(fake.dataCalls, contact.Address)
 	if err := fake.requestError[contact.Address]; err != nil {
 		return FindDataResult{}, err
@@ -42,6 +48,8 @@ func (fake *fakeRPCClient) SendFindDataMessage(contact *Contact, _ *KademliaID) 
 }
 
 func (fake *fakeRPCClient) SendStoreMessage(contact *Contact, key *KademliaID, data []byte) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.storeCalls = append(fake.storeCalls, storeCall{contact.Address, *key, cloneBytes(data)})
 	return fake.requestError[contact.Address]
 }

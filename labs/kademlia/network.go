@@ -24,7 +24,7 @@ const (
 	rpcStoreReply  = "STORE_REPLY"
 	defaultTimeout = 500 * time.Millisecond
 	defaultRetries = 2
-	maxDatagram    = 64 * 1024
+	maxDatagram    = 65507 // Maximum IPv4 UDP payload (including JSON overhead).
 )
 
 var (
@@ -193,6 +193,9 @@ func (network *Network) SendFindDataMessage(contact *Contact, hash *KademliaID) 
 // SendStoreMessage performs a STORE RPC. The remote side verifies K = hash(V)
 // before acknowledging the request.
 func (network *Network) SendStoreMessage(contact *Contact, hash *KademliaID, data []byte) error {
+	if err := validateValueSize(data); err != nil {
+		return err
+	}
 	if hash == nil {
 		return ErrInvalidHash
 	}

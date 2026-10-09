@@ -11,6 +11,70 @@ import (
 
 const DefaultReplicationInterval = time.Hour
 
+const DefaultRefreshInterval = time.Hour
+
+// RefreshIdleBuckets looks up a random target in every range with no outgoing
+// lookup for idleFor. Empty ranges are included so they can acquire contacts.
+func (kademlia *Kademlia) RefreshIdleBuckets(idleFor time.Duration) error {
+	return kademlia.refreshIdleBuckets(context.Background(), idleFor)
+}
+
+func (kademlia *Kademlia) refreshIdleBuckets(ctx context.Context, idleFor time.Duration) error {
+	if idleFor <= 0 {
+		return errors.New("refresh interval must be positive")
+	}
+	if kademlia.routingTable == nil || kademlia.routingTable.me.ID == nil {
+		return ErrNoRoutingTable
+	}
+	if kademlia.network == nil {
+		return ErrNoNetwork
+	}
+	rt := kademlia.routingTable
+	if len(rt.FindClosestContacts(rt.me.ID, 1)) == 0 {
+		return nil // An isolated node has no peer through which to refresh.
+	}
+	now := time.Now()
+	var refreshErrors []error
+	for index, bucket := range rt.buckets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !bucket.claimRefresh(now, idleFor) {
+			continue
+		}
+		target, err := refreshTarget(rt.me.ID, index)
+		if err != nil {
+			return err
+		}
+		contact := NewContact(target, "")
+		if _, err := kademlia.LookupContact(&contact); err != nil {
+			refreshErrors = append(refreshErrors, fmt.Errorf("refresh bucket %d: %w", index, err))
+		}
+	}
+	return errors.Join(refreshErrors...)
+}
+
+// RunBucketRefresher scans once per interval for buckets idle for that duration.
+// Passes never overlap. Cancellation is checked between buckets; an in-flight
+// lookup finishes under the transport's timeout/retry policy before shutdown.
+func (kademlia *Kademlia) RunBucketRefresher(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		return errors.New("refresh interval must be positive")
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := kademlia.refreshIdleBuckets(ctx, interval); err != nil && ctx.Err() == nil {
+				log.Printf("kademlia: periodic bucket refresh: %v", err)
+			}
+		}
+	}
+}
+
 // Join introduces this node to an existing network, discovers its closest
 // neighbors, then refreshes every bucket farther away than its closest neighbor.
 // The transport must already be listening so other nodes can contact us.

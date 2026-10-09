@@ -37,6 +37,14 @@ func (routingTable *RoutingTable) K() int {
 	return routingTable.k
 }
 
+func (routingTable *RoutingTable) touchLookup(target *KademliaID) {
+	// A self lookup has no XOR distance range and must not refresh bucket 255.
+	if target == nil || routingTable.me.ID == nil || target.Equals(routingTable.me.ID) {
+		return
+	}
+	routingTable.buckets[routingTable.getBucketIndex(target)].touchLookup()
+}
+
 // Me returns this node's own contact.
 func (routingTable *RoutingTable) Me() Contact {
 	return routingTable.me

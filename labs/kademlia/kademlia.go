@@ -6,10 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// MaxValueSize leaves room for base64 encoding and JSON metadata while keeping
+// value RPCs below even the small UDP send limits used by local development
+// systems. The same limit applies to real and simulated transports.
+const MaxValueSize = 4 * 1024
 
 var (
 	ErrInvalidHash    = errors.New("hash must be a 256-bit hexadecimal string")
@@ -19,6 +26,7 @@ var (
 	ErrNoNetwork      = errors.New("kademlia has no network client")
 	ErrLookupFailed   = errors.New("no contacted node responded")
 	ErrValueNotFound  = errors.New("value not found")
+	ErrValueTooLarge  = errors.New("value exceeds size limit")
 )
 
 // FindDataResult represents the two legal FIND_VALUE responses: either the
@@ -31,6 +39,7 @@ type FindDataResult struct {
 
 // RPCClient is the contract between the core Kademlia algorithm (Person B)
 // and the real or simulated network implementation (Person A).
+// Implementations must allow concurrent calls, including lookup probes.
 type RPCClient interface {
 	SendPingMessage(contact *Contact) (time.Duration, error)
 	SendFindContactMessage(contact *Contact, target *KademliaID) ([]Contact, error)
@@ -44,6 +53,10 @@ type RPCClient interface {
 type Kademlia struct {
 	routingTable *RoutingTable
 	network      RPCClient
+	configMu     sync.RWMutex
+	alpha        int
+	lookupLogger *slog.Logger
+	lookupID     atomic.Uint64
 
 	dataMu sync.RWMutex
 	data   map[string][]byte
@@ -58,6 +71,8 @@ func NewKademlia(routingTable *RoutingTable, network RPCClient) *Kademlia {
 	return &Kademlia{
 		routingTable: routingTable,
 		network:      network,
+		alpha:        DefaultAlpha,
+		lookupLogger: defaultLookupLogger,
 		data:         make(map[string][]byte),
 	}
 }
@@ -68,15 +83,28 @@ type lookupCandidate struct {
 	failed  bool
 }
 
-// LookupContact performs the iterative Kademlia node lookup. Sprint 1 uses a
-// sequential lookup (alpha=1): one closest unqueried node is probed at a time.
-func (kademlia *Kademlia) LookupContact(target *Contact) ([]Contact, error) {
+// LookupContact queries up to alpha of the closest unqueried candidates per
+// round. It stops once the k closest non-failed candidates have been queried.
+func (kademlia *Kademlia) LookupContact(target *Contact) (contacts []Contact, err error) {
+	targetID := ""
+	if target != nil && target.ID != nil {
+		targetID = target.ID.String()
+	}
+	trace := kademlia.startLookup("FIND_NODE", targetID)
+	defer func() {
+		foundTarget := false
+		for _, contact := range contacts {
+			foundTarget = foundTarget || contact.ID.String() == targetID
+		}
+		trace.complete(err, len(contacts) > 0, false, foundTarget)
+	}()
 	if target == nil || target.ID == nil {
 		return nil, ErrInvalidTarget
 	}
 	if kademlia.routingTable == nil {
 		return nil, ErrNoRoutingTable
 	}
+	kademlia.routingTable.touchLookup(target.ID)
 
 	candidates := make(map[string]*lookupCandidate)
 	kademlia.addCandidates(candidates, kademlia.routingTable.FindClosestContacts(target.ID, kademlia.routingTable.K()))
@@ -88,26 +116,22 @@ func (kademlia *Kademlia) LookupContact(target *Contact) ([]Contact, error) {
 	}
 
 	for {
-		next := kademlia.nextCandidate(candidates, target.ID)
-		if next == nil {
+		batch := kademlia.nextCandidates(candidates, target.ID, trace.alpha)
+		if len(batch) == 0 {
 			break
 		}
-
-		candidate := candidates[next.ID.String()]
-		candidate.queried = true
-		contacts, err := kademlia.network.SendFindContactMessage(next, target.ID)
-		if err != nil {
-			candidate.failed = true
-			continue
+		for _, reply := range kademlia.lookupRound(batch, target.ID, false, trace) {
+			if reply.err != nil {
+				candidates[reply.contact.ID.String()].failed = true
+				continue
+			}
+			kademlia.routingTable.AddContact(reply.contact)
+			// Referrals do not prove that those peers are alive.
+			kademlia.addCandidates(candidates, reply.result.Contacts)
 		}
-		kademlia.routingTable.AddContact(*next)
-
-		// Referrals are candidates, not evidence that those peers are alive.
-		// Refresh routing-table recency only after a direct RPC succeeds.
-		kademlia.addCandidates(candidates, contacts)
 	}
 
-	contacts := sortedCandidates(candidates, target.ID, kademlia.routingTable.K(), true)
+	contacts = sortedCandidates(candidates, target.ID, kademlia.routingTable.K(), true)
 	if len(contacts) == 0 {
 		return nil, ErrLookupFailed
 	}
@@ -116,7 +140,9 @@ func (kademlia *Kademlia) LookupContact(target *Contact) ([]Contact, error) {
 
 // LookupData searches locally and then performs an iterative FIND_VALUE
 // lookup. Any returned value is accepted only when SHA-256(value) equals key.
-func (kademlia *Kademlia) LookupData(hash string) ([]byte, *Contact, error) {
+func (kademlia *Kademlia) LookupData(hash string) (value []byte, source *Contact, err error) {
+	trace := kademlia.startLookup("FIND_VALUE", hash)
+	defer func() { trace.complete(err, err == nil, err == nil && source == nil, false) }()
 	key, err := parseHash(hash)
 	if err != nil {
 		return nil, nil, err
@@ -128,6 +154,7 @@ func (kademlia *Kademlia) LookupData(hash string) ([]byte, *Contact, error) {
 	if value, ok := kademlia.localValue(key); ok {
 		return value, nil, nil
 	}
+	kademlia.routingTable.touchLookup(key)
 
 	candidates := make(map[string]*lookupCandidate)
 	kademlia.addCandidates(candidates, kademlia.routingTable.FindClosestContacts(key, kademlia.routingTable.K()))
@@ -138,40 +165,37 @@ func (kademlia *Kademlia) LookupData(hash string) ([]byte, *Contact, error) {
 		return nil, nil, ErrNoNetwork
 	}
 
-	sawHashMismatch := false
+	var invalidValueErr error
 	for {
-		next := kademlia.nextCandidate(candidates, key)
-		if next == nil {
+		batch := kademlia.nextCandidates(candidates, key, trace.alpha)
+		if len(batch) == 0 {
 			break
 		}
-
-		candidate := candidates[next.ID.String()]
-		candidate.queried = true
-		result, requestErr := kademlia.network.SendFindDataMessage(next, key)
-		if requestErr != nil {
-			candidate.failed = true
-			continue
-		}
-		kademlia.routingTable.AddContact(*next)
-
-		if result.Found {
-			if !dataMatchesHash(key, result.Value) {
-				sawHashMismatch = true
-				log.Printf("kademlia: discarded invalid value for key %s from %s", key, next.Address)
+		for _, reply := range kademlia.lookupRound(batch, key, true, trace) {
+			candidate := candidates[reply.contact.ID.String()]
+			if reply.err != nil {
+				candidate.failed = true
 				continue
 			}
+			kademlia.routingTable.AddContact(reply.contact)
+			if reply.result.Found {
+				if validationErr := kademlia.StoreValue(key, reply.result.Value); validationErr != nil {
+					candidate.failed = true
+					invalidValueErr = errors.Join(invalidValueErr, validationErr)
+					log.Printf("kademlia: discarded invalid value for key %s from %s: %v", key, reply.contact.Address, validationErr)
+					continue
+				}
 
-			value := cloneBytes(result.Value)
-			_ = kademlia.StoreValue(key, value)
-			source := *next
-			return value, &source, nil
+				value := cloneBytes(reply.result.Value)
+				source := reply.contact
+				return value, &source, nil
+			}
+			kademlia.addCandidates(candidates, reply.result.Contacts)
 		}
-
-		kademlia.addCandidates(candidates, result.Contacts)
 	}
 
-	if sawHashMismatch {
-		return nil, nil, ErrHashMismatch
+	if invalidValueErr != nil {
+		return nil, nil, invalidValueErr
 	}
 	return nil, nil, ErrValueNotFound
 }
@@ -179,6 +203,9 @@ func (kademlia *Kademlia) LookupData(hash string) ([]byte, *Contact, error) {
 // Store hashes data, finds the k closest nodes, and sends the key-value pair
 // to each of them. If this node is among the k closest, it stores a local copy.
 func (kademlia *Kademlia) Store(data []byte) (string, error) {
+	if err := validateValueSize(data); err != nil {
+		return "", err
+	}
 	if kademlia.routingTable == nil {
 		return "", ErrNoRoutingTable
 	}
@@ -219,6 +246,9 @@ func (kademlia *Kademlia) Store(data []byte) (string, error) {
 // StoreValue validates and stores an incoming key-value pair. Person A's
 // STORE RPC handler can call this method before acknowledging the request.
 func (kademlia *Kademlia) StoreValue(key *KademliaID, data []byte) error {
+	if err := validateValueSize(data); err != nil {
+		return err
+	}
 	if key == nil || !dataMatchesHash(key, data) {
 		return ErrHashMismatch
 	}
@@ -278,17 +308,28 @@ func (kademlia *Kademlia) addCandidates(candidates map[string]*lookupCandidate, 
 	}
 }
 
-func (kademlia *Kademlia) nextCandidate(candidates map[string]*lookupCandidate, target *KademliaID) *Contact {
+func (kademlia *Kademlia) nextCandidates(candidates map[string]*lookupCandidate, target *KademliaID, alpha int) []Contact {
 	ordered := sortedCandidateEntries(candidates, target, false)
 	limit := kademlia.routingTable.K()
 	if len(ordered) < limit {
 		limit = len(ordered)
 	}
+	batch := make([]Contact, 0, min(alpha, limit))
 	for _, candidate := range ordered[:limit] {
 		if !candidate.queried {
-			contact := candidate.contact
-			return &contact
+			candidate.queried = true
+			batch = append(batch, candidate.contact)
+			if len(batch) == alpha {
+				break
+			}
 		}
+	}
+	return batch
+}
+
+func validateValueSize(data []byte) error {
+	if len(data) > MaxValueSize {
+		return fmt.Errorf("%w: got %d bytes, maximum is %d bytes", ErrValueTooLarge, len(data), MaxValueSize)
 	}
 	return nil
 }

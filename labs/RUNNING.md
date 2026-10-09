@@ -9,13 +9,13 @@ One running copy of the Go program is one **node**. A node has:
 - An address, such as `127.0.0.1:8001`, and an ID equal to `SHA-256(IP:port)`.
 - A **routing table**, which is a contact book for other nodes.
 - A **data store**, which holds some file contents in memory.
-- A UDP listener, an interactive CLI or headless loop, and a replication worker.
+- A UDP listener, an interactive CLI or headless loop, and replication and bucket-refresh workers.
 
 A file's **key** is `SHA-256(file contents)`. The same bytes always have the same key. When receiving bytes for a key, nodes check that the hash matches. This detects incorrect content; Part 2 adds proof of who published it.
 
 Kademlia decides where to store a key using `distance = nodeID XOR key`, interpreted as a number. Smaller numbers are closer. This is distance between identifiers, unrelated to physical location. A lookup asks known peers for contacts closer to the target, then asks those contacts, continuing until it has queried the closest candidates it has found. The initiating node controls the iteration.
 
-The parameter `k` is both the bucket capacity and desired replication factor, defaulting to 10. In a three-node network, only three distinct nodes can hold replicas. `alpha` controls concurrent lookup probes; the code still uses alpha = 1, and adjustable parallel probes remain a team task.
+The parameter `k` is both the bucket capacity and desired replication factor, defaulting to 10. In a three-node network, only three distinct nodes can hold replicas. `alpha` controls concurrent lookup probes and defaults to 3. Both node and value lookups query up to alpha closest unqueried candidates per round, wait for the batch, and then incorporate referrals. Set `ALPHA=1` to compare against sequential lookups. Failed peers are excluded, each peer is queried at most once, and lookup ends when the k closest remaining candidates have been queried (or a valid value is found).
 
 ```mermaid
 flowchart LR
@@ -49,10 +49,14 @@ The initial core PR, [PR #1](https://github.com/ArianAsghari/d7024e/pull/1), was
 | Bootstrap contact and self-lookup | Implemented through `BOOTSTRAP` and `join` |
 | Refresh buckets farther than the closest neighbor | Implemented during join |
 | Periodic replication without expiration | Implemented; interval defaults to one hour |
+| Alpha-parallel node and value lookup | Implemented; `ALPHA` / `SetAlpha`, default 3 |
+| Periodic refresh of idle buckets | Implemented; `REFRESH_INTERVAL`, default one hour |
+| Explicit value-size limit | Implemented; 4 KiB (4096 bytes), enforced at store and retrieval boundaries |
+| Probe and outcome logging | Implemented; JSON events with per-lookup probe/round counts |
 | Report thread-safety section | Written in `../REPORT.md` |
 | Version records, no forks/rollback, and catch-up | Sprint 3; not implemented in this change |
 
-The latest team message prioritizes joining for tomorrow. This is what joining does:
+Joining works as follows:
 
 1. Contact the bootstrap node and insert its contact into the routing table.
 2. Run the normal node lookup with **our own ID** as the target. We are discovering neighbors close to where we belong in the ID space.
@@ -152,9 +156,54 @@ Stopping and restarting all nodes loses their in-memory stores. Disk persistence
 | `PORT` | `8000` | UDP listener port; use different ports for nodes on one machine. |
 | `BOOTSTRAP` | Empty | Existing peer's IP:port or hostname:port. Empty starts the first node. |
 | `REPLICATION_INTERVAL` | `1h` | Positive duration such as `5s`, `30s`, or `1h`. |
+| `REFRESH_INTERVAL` | `1h` | Scan interval and idle threshold for bucket refresh; must be positive. |
+| `ALPHA` | `3` | Maximum concurrent probes per lookup round; positive integer. |
 | `HEADLESS` | Empty | Set to `1` to run without a CLI until SIGINT/SIGTERM. Used for service containers. |
 
 Hostnames are resolved before the bootstrap ID is hashed. A service name must resolve to the actual node address, which is why the Docker bootstrap uses DNS round-robin instead of a virtual service IP. `k` is adjustable through `NewRoutingTable(me, k)`; runtime flags for it are not implemented.
+
+## Idle bucket refresh
+
+Each bucket records the last outgoing lookup targeting its XOR distance range. A remote node or value lookup updates that timestamp; a local value-cache hit, a self lookup, and referrals alone do not. Every `REFRESH_INTERVAL`, the worker looks up a random ID in each idle range, including empty buckets. It skips a node with no peers. The timestamp advances even on a failed attempt, so failures are retried after another interval instead of in a tight loop. Buckets start with the node's creation time, preventing an immediate 256-bucket startup sweep.
+
+Refresh passes run sequentially, with no bucket lock held during network calls. Both maintenance workers stop on CLI exit or process cancellation and are joined before the listener closes. Cancellation takes effect between buckets/values; an active lookup finishes under the RPC timeout/retry policy. A scan may take time on an unresponsive network.
+
+For a short local refresh demonstration, set `REFRESH_INTERVAL=5s`. In simulator code, call `RefreshIdleBuckets(duration)` for a pass, or run `RunBucketRefresher(ctx, duration)` as a goroutine when maintenance belongs in the experiment.
+
+## Value size
+
+The maximum value is **4096 bytes (4 KiB)**, inclusive. Empty values are allowed. Values use a single JSON-encoded UDP datagram: 4096 bytes become 5464 base64 characters, with additional RPC metadata. This conservative limit accommodates smaller local UDP send limits as well as the protocol's 65,507-byte IPv4 payload ceiling. A 32 KiB candidate limit failed a real loopback test on the development Mac with `message too long`; the 4 KiB boundary is tested with STORE and FIND_VALUE. Large datagrams can still fragment and be lost; the existing retry policy applies. Larger packages would require chunking or a separate TCP value-transfer plane.
+
+`Store`, `StoreValue` (including incoming STORE handlers), outgoing STORE, and acceptance of FIND_VALUE bytes enforce the same limit. Oversized values return `ErrValueTooLarge` and are never cached or partially stored. CLI `put` reads at most 4097 bytes before validation, and reports rejection as `put failed`.
+
+## Lookup instrumentation and experiment integration
+
+The existing `RPCClient`, `LookupContact`, and `LookupData` signatures are unchanged. **The simulated RPC client must support concurrent calls**, including any counters, maps, and random-number generators. Configure experiments with `node.SetAlpha(1)` or `node.SetAlpha(3)`; invalid values return an error. A lookup snapshots alpha when it starts. Alpha is a per-lookup limit, so simultaneous lookups can collectively issue more probes.
+
+Lookup events are JSON lines on stderr by default. Redirect them to a separate file with a shared standard logger:
+
+```go
+logger := slog.New(slog.NewJSONHandler(file, nil)) // file is an open io.Writer
+node.SetLookupLogger(logger)
+if err := node.SetAlpha(3); err != nil {
+    return err
+}
+```
+
+`SetLookupLogger(nil)` disables events explicitly, for example during topology setup. Use a shared handler when multiple simulated nodes write to one file. Other diagnostic messages on stderr are plain text, so a dedicated lookup logger is preferable for analysis.
+
+| Event / field | Meaning |
+| --- | --- |
+| `event=lookup_probe` | One logical FIND_NODE/FIND_VALUE call dispatched; includes `peer_id`, `peer_address`, and `round`. Transport retransmissions are not additional logical probes. |
+| `event=lookup_complete` | Exactly one outcome per call, including input failures and local cache hits. |
+| `node_id`, `lookup_id` | Correlation pair; lookup IDs increase within one node instance. Separate process runs should use separate files or run labels. |
+| `rpc`, `target`, `alpha` | Operation, target ID/key, and configured parallelism. |
+| `probes`, `rounds`, `elapsed_us` | Total logical probes, completed batches, and elapsed microseconds. |
+| `success`, `error` | FIND_NODE succeeds when at least one responsive contact is returned; FIND_VALUE succeeds only with verified bytes. Empty routing-table node lookups retain the existing empty-result/nil-error API but log `success=false`. |
+| `found_target` | FIND_NODE returned the exact target among its contacts; use this when measuring exact-node discovery. |
+| `local` | FIND_VALUE was served from the local store, with zero probes. |
+
+Parallel rounds wait for their slowest RPC, including the final value-lookup round, so no lookup RPC is left running after return. Alpha changes concurrency and latency; it does **not** guarantee fewer total probes or a flat probes/log2(N) ratio. Compare alpha 1 and 3 with the same topology/seeds, `k`, retry policy, and cache state. Exclude join/refresh/replication setup lookups from query measurements by controlling worker lifetime and the logging window. The 1000+ node simulator and the two full experiments are separate team work; they have not been run as part of this core change.
 
 ## Docker
 
@@ -219,8 +268,8 @@ The `total:` line from `go tool cover` is the combined statement coverage. The i
 | File | Responsibility |
 | --- | --- |
 | `main.go` | Startup configuration, joining, worker lifetime, and CLI |
-| `kademlia/kademlia.go` | Iterative node/value lookup, initial replication, hash verification, and local values |
-| `kademlia/maintenance.go` | Join, bucket-refresh targets, and periodic replication |
+| `kademlia/kademlia.go`, `kademlia/lookup.go` | Parallel node/value lookup, JSON instrumentation, replication, size/hash verification, and local values |
+| `kademlia/maintenance.go` | Join, idle bucket refresh, refresh targets, and periodic replication |
 | `kademlia/routingtable.go` | Assign contacts to buckets and select nearest peers |
 | `kademlia/bucket.go` | Contact recency, PING eviction, and per-bucket locking |
 | `kademlia/network.go` | UDP serialization, RPC correlation/timeouts/retries, and request handlers |
@@ -239,4 +288,4 @@ latest -> record v3 -> record v2 -> record v1
            blob v3      blob v2      blob v1
 ```
 
-Versions must have a total order: any two can be compared consistently. Nodes must reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it must fetch and validate the missing v2 link before advancing. Signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. None of that is required for tomorrow's first join demonstration.
+Versions must have a total order: any two can be compared consistently. Nodes must reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it must fetch and validate the missing v2 link before advancing. Signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. These features remain separate from the current Part 1 storage implementation.

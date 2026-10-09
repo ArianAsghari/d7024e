@@ -14,6 +14,7 @@ import (
 type maintenanceRPC struct {
 	ping  func(*Contact) error
 	find  func(*Contact, *KademliaID) ([]Contact, error)
+	data  func(*Contact, *KademliaID) (FindDataResult, error)
 	store func(*Contact, *KademliaID, []byte) error
 }
 
@@ -31,7 +32,10 @@ func (rpc *maintenanceRPC) SendFindContactMessage(contact *Contact, target *Kade
 	return nil, nil
 }
 
-func (rpc *maintenanceRPC) SendFindDataMessage(*Contact, *KademliaID) (FindDataResult, error) {
+func (rpc *maintenanceRPC) SendFindDataMessage(contact *Contact, key *KademliaID) (FindDataResult, error) {
+	if rpc.data != nil {
+		return rpc.data(contact, key)
+	}
 	return FindDataResult{}, nil
 }
 
@@ -193,12 +197,15 @@ func TestJoinLooksUpSelfThenRefreshesFartherBuckets(t *testing.T) {
 	neighbor := NewContact(&neighborID, "neighbor")
 	var targets []KademliaID
 	var events []string
+	var mu sync.Mutex
 	rpc := &maintenanceRPC{
 		ping: func(contact *Contact) error {
 			events = append(events, "ping "+contact.Address)
 			return nil
 		},
 		find: func(contact *Contact, target *KademliaID) ([]Contact, error) {
+			mu.Lock()
+			defer mu.Unlock()
 			events = append(events, "lookup")
 			if len(targets) == 0 || !targets[len(targets)-1].Equals(target) {
 				targets = append(targets, *target)

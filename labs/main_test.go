@@ -375,12 +375,16 @@ func TestRunNodeRejectsInvalidConfiguration(t *testing.T) {
 		{"BIND_IP", "invalid"}, {"BIND_IP", "0.0.0.0"},
 		{"PORT", "0"}, {"PORT", "65536"},
 		{"REPLICATION_INTERVAL", "never"}, {"REPLICATION_INTERVAL", "0s"},
+		{"REFRESH_INTERVAL", "never"}, {"REFRESH_INTERVAL", "0s"},
+		{"ALPHA", "zero"}, {"ALPHA", "0"}, {"ALPHA", "-3"},
 		{"BOOTSTRAP", "not-an-address"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			t.Setenv("BIND_IP", "127.0.0.1")
 			t.Setenv("PORT", strconv.Itoa(reserveTestPort(t)))
 			t.Setenv("REPLICATION_INTERVAL", "1h")
+			t.Setenv("REFRESH_INTERVAL", "1h")
+			t.Setenv("ALPHA", "3")
 			t.Setenv("BOOTSTRAP", "")
 			t.Setenv(tc.key, tc.value)
 			if err := runNode(context.Background(), strings.NewReader(""), &bytes.Buffer{}); err == nil {
@@ -396,10 +400,25 @@ func TestHeadlessNodeStopsWhenContextIsCanceled(t *testing.T) {
 	t.Setenv("BOOTSTRAP", "")
 	t.Setenv("HEADLESS", "1")
 	t.Setenv("REPLICATION_INTERVAL", "1ms")
+	t.Setenv("REFRESH_INTERVAL", "1ms")
+	t.Setenv("ALPHA", "1")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := runNode(ctx, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPutRejectsOversizedFile(t *testing.T) {
+	rt, node, transport := newTestNode(t)
+	file := filepath.Join(t.TempDir(), "large.bin")
+	if err := os.WriteFile(file, make([]byte, kademlia.MaxValueSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	dispatchCommand(&out, rt, node, transport, "put", []string{file})
+	if !strings.Contains(out.String(), "put failed:") || strings.Contains(out.String(), "stored as") || len(node.Entries()) != 0 {
+		t.Fatalf("oversized put output = %q", out.String())
 	}
 }
 

@@ -14,6 +14,8 @@ type bucket struct {
 	capacity int
 	probing  bool
 	sequence uint64
+	// Outgoing lookups in this distance range postpone periodic refresh.
+	lastLookup time.Time
 }
 
 type bucketEntry struct {
@@ -24,9 +26,28 @@ type bucketEntry struct {
 // newBucket returns a new instance of a bucket
 func newBucket(capacity int) *bucket {
 	return &bucket{
-		list:     list.New(),
-		capacity: capacity,
+		list:       list.New(),
+		capacity:   capacity,
+		lastLookup: time.Now(),
 	}
+}
+
+func (bucket *bucket) touchLookup() {
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+	bucket.lastLookup = time.Now()
+}
+
+// claimRefresh checks and advances the timestamp together, so concurrent
+// maintenance passes cannot schedule the same idle bucket twice.
+func (bucket *bucket) claimRefresh(now time.Time, idleFor time.Duration) bool {
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+	if now.Sub(bucket.lastLookup) < idleFor {
+		return false
+	}
+	bucket.lastLookup = now
+	return true
 }
 
 // AddContact adds the Contact to the front of the bucket

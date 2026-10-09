@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -84,6 +85,22 @@ func runNode(ctx context.Context, in io.Reader, out io.Writer) error {
 			return fmt.Errorf("REPLICATION_INTERVAL must be a positive duration, e.g. 30s or 1h")
 		}
 	}
+	refreshInterval := kademlia.DefaultRefreshInterval
+	if raw := os.Getenv("REFRESH_INTERVAL"); raw != "" {
+		var err error
+		refreshInterval, err = time.ParseDuration(raw)
+		if err != nil || refreshInterval <= 0 {
+			return fmt.Errorf("REFRESH_INTERVAL must be a positive duration, e.g. 30s or 1h")
+		}
+	}
+	alpha := kademlia.DefaultAlpha
+	if raw := os.Getenv("ALPHA"); raw != "" {
+		var err error
+		alpha, err = strconv.Atoi(raw)
+		if err != nil || alpha < 1 {
+			return fmt.Errorf("ALPHA must be a positive integer")
+		}
+	}
 	address := net.JoinHostPort(ip, strconv.Itoa(port))
 
 	id := idFromAddress(address)
@@ -94,6 +111,9 @@ func runNode(ctx context.Context, in io.Reader, out io.Writer) error {
 	routingTable := kademlia.NewRoutingTable(me)
 	network := kademlia.NewNetwork(me)
 	node := kademlia.NewKademlia(routingTable, network)
+	if err := node.SetAlpha(alpha); err != nil {
+		return err
+	}
 	network.AttachKademlia(node)
 	if err := network.Listen(ip, port); err != nil {
 		return err
@@ -111,15 +131,20 @@ func runNode(ctx context.Context, in io.Reader, out io.Writer) error {
 		fmt.Fprintf(out, "Joined via %s\n", bootstrap.Address)
 	}
 
-	replicationCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
+	maintenanceCtx, cancel := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	workers.Add(2)
 	go func() {
-		defer close(done)
-		_ = node.RunRepublisher(replicationCtx, interval)
+		defer workers.Done()
+		_ = node.RunRepublisher(maintenanceCtx, interval)
+	}()
+	go func() {
+		defer workers.Done()
+		_ = node.RunBucketRefresher(maintenanceCtx, refreshInterval)
 	}()
 	defer func() {
 		cancel()
-		<-done
+		workers.Wait()
 	}()
 
 	if os.Getenv("HEADLESS") == "1" {
@@ -227,13 +252,23 @@ func dispatchCommand(out io.Writer, routingTable *kademlia.RoutingTable, node *k
 			fmt.Fprintln(out, "usage: put FILENAME")
 			return true
 		}
-		data, err := os.ReadFile(args[0])
+		file, err := os.Open(args[0])
+		if err != nil {
+			fmt.Fprintf(out, "put failed: %v\n", err)
+			return true
+		}
+		// Read one extra byte so Store can reject oversize input without
+		// loading an arbitrarily large file into memory.
+		data, err := io.ReadAll(io.LimitReader(file, kademlia.MaxValueSize+1))
+		_ = file.Close()
 		if err != nil {
 			fmt.Fprintf(out, "put failed: %v\n", err)
 			return true
 		}
 		key, storeErr := node.Store(data)
-		if storeErr != nil {
+		if storeErr != nil && key == "" {
+			fmt.Fprintf(out, "put failed: %v\n", storeErr)
+		} else if storeErr != nil {
 			fmt.Fprintf(out, "stored as %s (with warnings: %v)\n", key, storeErr)
 		} else {
 			fmt.Fprintf(out, "stored as %s\n", key)
