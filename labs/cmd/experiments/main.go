@@ -52,16 +52,17 @@ func run(args []string) error {
 		N: 500, Seeds: seedList, Values: 20, Lookups: 100, Workers: *workers,
 		Losses: []float64{0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5},
 		Variants: []experiment.Variant{
-			{Name: "retries0", Retries: 0},
-			{Name: "retries1", Retries: 1},
-			{Name: "retries2", Retries: 2}, // the real transport's default
+			{Name: "alpha3-retries2", Alpha: 3, Retries: 2}, // defaults of the real node
+			{Name: "alpha3-retries0", Alpha: 3, Retries: 0},
+			{Name: "alpha1-retries2", Alpha: 1, Retries: 2},
+			{Name: "alpha1-retries0", Alpha: 1, Retries: 0},
 		},
 	}
 	if *quick {
 		scalability.Sizes, scalability.NodeLookups, scalability.ValueLookups = []int{16, 64}, 5, 5
 		reliability.N, reliability.Values, reliability.Lookups = 60, 3, 10
 		reliability.Losses = []float64{0, 0.3}
-		reliability.Variants = []experiment.Variant{{Name: "retries0", Retries: 0}, {Name: "retries2", Retries: 2}}
+		reliability.Variants = reliability.Variants[:2]
 	}
 
 	if *which == "all" || *which == "scalability" {

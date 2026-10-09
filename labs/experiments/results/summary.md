@@ -2,21 +2,21 @@
 
 ## Experiment 1 - lookup probes vs network size
 
-k = 10, 10 seeds per network size. Figure: `scalability.svg`, data: `scalability.csv`.
+k = 10, alpha = 3, 10 seeds per network size. Figures: `scalability.svg`, `scalability_rounds.svg`; data: `scalability.csv`.
 
-| N | log2 N | node lookup probes (mean +/- std) | value lookup probes (mean +/- std) | node lookup found true closest node |
-|---|---|---|---|---|
-| 16 | 4 | 10.0 +/- 0.0 | 1.0 +/- 0.0 | 100.0% |
-| 32 | 5 | 10.0 +/- 0.0 | 1.0 +/- 0.0 | 100.0% |
-| 64 | 6 | 10.1 +/- 0.0 | 1.1 +/- 0.0 | 100.0% |
-| 128 | 7 | 10.3 +/- 0.0 | 1.3 +/- 0.1 | 100.0% |
-| 256 | 8 | 10.6 +/- 0.1 | 1.6 +/- 0.1 | 100.0% |
-| 512 | 9 | 10.8 +/- 0.1 | 1.8 +/- 0.1 | 100.0% |
-| 1024 | 10 | 11.1 +/- 0.1 | 2.1 +/- 0.1 | 100.0% |
-| 2048 | 11 | 11.5 +/- 0.2 | 2.4 +/- 0.1 | 100.0% |
+| N | log2 N | node lookup probes (mean +/- std) | node lookup rounds | value lookup probes (mean +/- std) | value lookup rounds | node lookup found true closest node |
+|---|---|---|---|---|---|---|
+| 16 | 4 | 10.0 +/- 0.0 | 4.00 | 3.0 +/- 0.0 | 1.00 | 100.0% |
+| 32 | 5 | 10.0 +/- 0.0 | 4.00 | 3.0 +/- 0.0 | 1.00 | 100.0% |
+| 64 | 6 | 10.5 +/- 0.1 | 4.12 | 3.3 +/- 0.1 | 1.11 | 100.0% |
+| 128 | 7 | 11.1 +/- 0.1 | 4.26 | 4.0 +/- 0.2 | 1.32 | 100.0% |
+| 256 | 8 | 12.0 +/- 0.3 | 4.50 | 4.6 +/- 0.2 | 1.54 | 100.0% |
+| 512 | 9 | 12.9 +/- 0.2 | 4.78 | 5.3 +/- 0.3 | 1.76 | 100.0% |
+| 1024 | 10 | 13.4 +/- 0.3 | 4.92 | 5.9 +/- 0.4 | 1.97 | 100.0% |
+| 2048 | 11 | 14.2 +/- 0.3 | 5.17 | 6.6 +/- 0.2 | 2.20 | 100.0% |
 
-Least-squares fit (node lookups): probes = 0.22 * log2(N) + 8.92  (R^2 = 0.942).
-Least-squares fit (value lookups): probes = 0.21 * log2(N) + -0.04  (R^2 = 0.953).
+Least-squares fit (node lookups): probes = 0.65 * log2(N) + 6.91  (R^2 = 0.971).
+Least-squares fit (value lookups): probes = 0.55 * log2(N) + 0.33  (R^2 = 0.967).
 
 Failed lookups (no loss configured): 0 of 8000.
 
@@ -24,25 +24,25 @@ Failed lookups (no loss configured): 0 of 8000.
 
 N = 500, k = 10. Figure: `reliability.svg`, data: `reliability.csv`. Success = the value was found and passed the hash check. Cell = mean success rate +/- std across seeds.
 
-| loss | retries=0 | retries=1 | retries=2 |
-|---|---|---|---|
-| 0% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
-| 5% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
-| 10% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
-| 20% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
-| 30% | 99.8% +/- 0.4 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
-| 40% | 95.5% +/- 2.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
-| 50% | 82.8% +/- 4.0 | 99.0% +/- 1.2 | 99.7% +/- 0.5 |
+| loss | alpha=3, retries=2 | alpha=1, retries=2 | alpha=3, retries=0 | alpha=1, retries=0 |
+|---|---|---|---|---|
+| 0% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
+| 5% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
+| 10% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 |
+| 20% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 99.9% +/- 0.3 |
+| 30% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 99.7% +/- 0.7 | 99.8% +/- 0.4 |
+| 40% | 100.0% +/- 0.0 | 100.0% +/- 0.0 | 97.1% +/- 1.4 | 95.2% +/- 1.8 |
+| 50% | 99.7% +/- 0.5 | 99.9% +/- 0.3 | 83.7% +/- 3.7 | 84.5% +/- 2.6 |
 
-Mean probes per lookup:
+Mean probes per lookup (messages) and mean rounds per lookup (latency proxy):
 
-| loss | retries=0 | retries=1 | retries=2 |
-|---|---|---|---|
-| 0% | 1.8 | 1.8 | 1.8 |
-| 5% | 2.1 | 1.8 | 1.8 |
-| 10% | 2.3 | 1.9 | 1.8 |
-| 20% | 3.1 | 2.1 | 1.9 |
-| 30% | 4.3 | 2.6 | 2.2 |
-| 40% | 6.6 | 3.3 | 2.6 |
-| 50% | 9.8 | 4.9 | 3.5 |
+| loss | alpha=3, retries=2 | alpha=1, retries=2 | alpha=3, retries=0 | alpha=1, retries=0 |
+|---|---|---|---|---|
+| 0% | 5.1 probes / 1.7 rounds | 1.8 probes / 1.8 rounds | 5.1 probes / 1.7 rounds | 1.8 probes / 1.8 rounds |
+| 5% | 5.2 probes / 1.7 rounds | 1.8 probes / 1.8 rounds | 5.3 probes / 1.8 rounds | 2.0 probes / 2.0 rounds |
+| 10% | 5.1 probes / 1.7 rounds | 1.8 probes / 1.8 rounds | 5.4 probes / 1.8 rounds | 2.3 probes / 2.3 rounds |
+| 20% | 5.2 probes / 1.7 rounds | 1.9 probes / 1.9 rounds | 6.1 probes / 2.0 rounds | 3.1 probes / 3.1 rounds |
+| 30% | 5.3 probes / 1.8 rounds | 2.2 probes / 2.2 rounds | 6.8 probes / 2.3 rounds | 4.3 probes / 4.3 rounds |
+| 40% | 5.6 probes / 1.9 rounds | 2.6 probes / 2.6 rounds | 8.8 probes / 3.0 rounds | 6.5 probes / 6.5 rounds |
+| 50% | 6.2 probes / 2.1 rounds | 3.4 probes / 3.4 rounds | 11.7 probes / 4.0 rounds | 9.9 probes / 9.9 rounds |
 

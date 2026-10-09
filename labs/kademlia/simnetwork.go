@@ -111,12 +111,15 @@ func (s *SimNetwork) SetObserver(fn func(RPCEvent)) {
 
 // NewNode builds a Kademlia node attached to this network and reachable under
 // me.Address. k is the bucket size / replication factor; 0 selects DefaultK.
+// Simulated nodes do not log their lookups (thousands of them would flood the
+// default logger); call SetLookupLogger on a node to record its lookups.
 func (s *SimNetwork) NewNode(me Contact, k int) (*Kademlia, error) {
 	if me.ID == nil || me.Address == "" {
 		return nil, errors.New("simnetwork: a node needs an ID and an address")
 	}
 	handle := &simHandle{net: s, me: me, calls: make(map[string]uint64)}
 	node := NewKademlia(NewRoutingTable(me, k), handle)
+	node.SetLookupLogger(nil)
 	handle.node = node
 
 	s.mu.Lock()

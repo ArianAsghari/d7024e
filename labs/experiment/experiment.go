@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"runtime"
 	"sync"
@@ -18,14 +19,16 @@ type ScalabilityConfig struct {
 	Sizes        []int
 	Seeds        []int64
 	K            int // 0 = default
+	Alpha        int // 0 = default
 	NodeLookups  int // FIND_NODE lookups measured per run
 	ValueLookups int // FIND_VALUE lookups measured per run
 	Workers      int // runs executed in parallel; 0 = number of CPUs
 }
 
-// Variant is one transport configuration compared in Experiment 2.
+// Variant is one lookup/transport configuration compared in Experiment 2.
 type Variant struct {
 	Name    string
+	Alpha   int // lookup parallelism
 	Retries int // extra RPC attempts after a lost packet
 }
 
@@ -42,8 +45,8 @@ type ReliabilityConfig struct {
 	Workers  int
 }
 
-// RunScalability writes the event log of Experiment 1 to w. For every network
-// size and seed it builds a fresh random network, then measures iterative node
+// RunScalability writes the log of Experiment 1 to w. For every network size
+// and seed it builds a fresh random network, then measures iterative node
 // lookups for random targets and value lookups for stored random values, each
 // started from a random node.
 func RunScalability(w io.Writer, cfg ScalabilityConfig) error {
@@ -57,7 +60,7 @@ func RunScalability(w io.Writer, cfg ScalabilityConfig) error {
 	return runJobs(w, cfg.Workers, jobs)
 }
 
-// RunReliability writes the event log of Experiment 2 to w. Every
+// RunReliability writes the log of Experiment 2 to w. Every
 // (variant, loss, seed) combination is measured on a network built with the
 // same seed, so the variants are compared on comparable data.
 func RunReliability(w io.Writer, cfg ReliabilityConfig) error {
@@ -74,50 +77,47 @@ func RunReliability(w io.Writer, cfg ReliabilityConfig) error {
 }
 
 func scalabilityRun(cfg ScalabilityConfig, n int, seed int64) ([]byte, error) {
-	rec := newRecorder()
-	network, err := Build(BuildConfig{N: n, K: cfg.K, Seed: seed})
+	log := newRunLog()
+	network, err := Build(BuildConfig{N: n, K: cfg.K, Alpha: cfg.Alpha, Seed: seed})
 	if err != nil {
 		return nil, err
 	}
-	network.Sim.SetObserver(rec.observe)
 	rng := measurementRNG(seed, n)
-	rec.meta("run", map[string]any{
-		"exp": "scalability", "n": n, "seed": seed, "k": effectiveK(cfg.K), "join_failures": network.JoinFailures,
-	})
-
-	for i := 0; i < cfg.NodeLookups; i++ {
-		originIndex := rng.Intn(n)
-		origin := network.Nodes[originIndex]
-		target := kademlia.NewContact(randomID(rng), "")
-		// Ground truth: the nearest node other than the origin, which a lookup
-		// never reports about itself.
-		closest := network.Closest(target.ID, network.Contacts[originIndex].ID)
-		rec.meta("truth", map[string]any{"kind": "node", "target": shortID(target.ID), "closest": shortID(closest.ID)})
-		rec.measure("node", network.Contacts[originIndex], target.ID, func() (bool, string, string) {
-			contacts, err := origin.LookupContact(&target)
-			best := ""
-			if len(contacts) > 0 {
-				best = shortID(contacts[0].ID)
-			}
-			return err == nil, best, ""
-		})
-	}
-
 	keys, err := storeRandomValues(network, rng, cfg.ValueLookups)
 	if err != nil {
 		return nil, err
 	}
-	for _, key := range keys {
-		readerIndex := pickReader(network, rng, key)
-		rec.measureValue(network, readerIndex, key)
+
+	log.meta("run", map[string]any{
+		"exp": "scalability", "n": n, "seed": seed, "k": effectiveK(cfg.K), "alpha": effectiveAlpha(cfg.Alpha),
+		"join_failures": network.JoinFailures,
+	})
+	network.SetLookupLogger(log.logger()) // from here on the nodes log their lookups
+
+	for i := 0; i < cfg.NodeLookups; i++ {
+		originIndex := rng.Intn(n)
+		target := kademlia.NewContact(randomID(rng), "")
+		contacts, _ := network.Nodes[originIndex].LookupContact(&target)
+		// Ground truth: the nearest node other than the origin, which a lookup
+		// never reports about itself.
+		closest := network.Closest(target.ID, network.Contacts[originIndex].ID)
+		best := ""
+		if len(contacts) > 0 {
+			best = shortID(contacts[0].ID)
+		}
+		log.meta("node_result", map[string]any{"target": shortID(target.ID), "closest": shortID(closest.ID), "best": best})
 	}
-	return rec.finish()
+	for _, key := range keys {
+		_, _, _ = network.Nodes[pickReader(network, rng, key)].LookupData(key)
+	}
+	return log.finish()
 }
 
 func reliabilityRun(cfg ReliabilityConfig, variant Variant, loss float64, seed int64) ([]byte, error) {
-	rec := newRecorder()
-	// The network is built and filled without loss, so every variant starts
-	// from the same state; loss and retry policy are switched on afterwards.
+	log := newRunLog()
+	// The network is built and filled without loss and with default settings,
+	// so every variant starts from the same state; loss, retry policy and alpha
+	// are switched on afterwards.
 	network, err := Build(BuildConfig{N: cfg.N, K: cfg.K, Seed: seed})
 	if err != nil {
 		return nil, err
@@ -128,19 +128,22 @@ func reliabilityRun(cfg ReliabilityConfig, variant Variant, loss float64, seed i
 		return nil, err
 	}
 
+	if err := network.SetAlpha(variant.Alpha); err != nil {
+		return nil, err
+	}
 	network.Sim.SetRetries(variant.Retries)
 	network.Sim.SetPacketLoss(loss)
-	network.Sim.SetObserver(rec.observe)
-	rec.meta("run", map[string]any{
+	log.meta("run", map[string]any{
 		"exp": "reliability", "n": cfg.N, "seed": seed, "k": effectiveK(cfg.K),
-		"variant": variant.Name, "retries": variant.Retries, "loss": loss,
+		"variant": variant.Name, "alpha": variant.Alpha, "retries": variant.Retries, "loss": loss,
 	})
+	network.SetLookupLogger(log.logger())
 
 	for i := 0; i < cfg.Lookups; i++ {
 		key := keys[rng.Intn(len(keys))]
-		rec.measureValue(network, pickReader(network, rng, key), key)
+		_, _, _ = network.Nodes[pickReader(network, rng, key)].LookupData(key)
 	}
-	return rec.finish()
+	return log.finish()
 }
 
 func effectiveK(k int) int {
@@ -150,8 +153,15 @@ func effectiveK(k int) int {
 	return k
 }
 
+func effectiveAlpha(alpha int) int {
+	if alpha <= 0 {
+		return kademlia.DefaultAlpha
+	}
+	return alpha
+}
+
 // storeRandomValues stores count random values from random nodes and returns
-// their keys. Stores happen before the recorder is attached.
+// their keys. It runs before the nodes' lookup logging is switched on.
 func storeRandomValues(network *Network, rng *rand.Rand, count int) ([]string, error) {
 	keys := make([]string, 0, count)
 	for i := 0; i < count; i++ {
@@ -191,96 +201,54 @@ func shortID(id *kademlia.KademliaID) string {
 	return id.String()[:16]
 }
 
-// recorder turns the RPCs a measured lookup sends into JSON-lines events. A
-// "probe" is one FIND_NODE or FIND_VALUE RPC; retransmissions of the same RPC
-// by the transport are not extra probes. Measurements run one at a time, so
-// every FIND_* RPC seen while one is active belongs to it.
-type recorder struct {
-	mu     sync.Mutex
-	out    bytes.Buffer
-	active bool
-	id     uint64
-	kind   string
-	origin kademlia.Contact
-	probes int
-	failed int
+// runLog collects the log of one run in memory: the lookup events written by
+// the nodes' own logger (slog, JSON lines) plus the labels the experiment adds.
+type runLog struct {
+	mu  sync.Mutex
+	out bytes.Buffer
 }
 
-func newRecorder() *recorder { return &recorder{} }
+func newRunLog() *runLog { return &runLog{} }
 
-func (r *recorder) write(record map[string]any) {
-	line, _ := json.Marshal(record) // map of plain values: cannot fail
-	r.out.Write(append(line, '\n'))
-}
-
-func (r *recorder) meta(kind string, fields map[string]any) {
+// Write lets the runLog serve as the io.Writer of a slog handler; slog writes
+// each record with a single Write call, so lines never interleave.
+func (r *runLog) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.out.Write(p)
+}
+
+// logger returns the slog logger the nodes write their lookup events to. It
+// drops what the analysis does not need (wall-clock time, level, message,
+// elapsed time and addresses) and abbreviates IDs to 16 hex digits, which
+// keeps the logs compact and free of wall-clock measurements.
+func (r *runLog) logger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(r, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.TimeKey, slog.LevelKey, slog.MessageKey, "elapsed_us", "peer_address":
+				return slog.Attr{}
+			case "node_id", "peer_id", "target":
+				if v := a.Value.String(); len(v) > 16 {
+					return slog.String(a.Key, v[:16])
+				}
+			}
+			return a
+		},
+	}))
+}
+
+// meta writes a label record such as {"ev":"run","n":500}.
+func (r *runLog) meta(kind string, fields map[string]any) {
 	record := map[string]any{"ev": kind}
 	for key, value := range fields {
 		record[key] = value
 	}
-	r.write(record)
+	line, _ := json.Marshal(record) // map of plain values: cannot fail
+	_, _ = r.Write(append(line, '\n'))
 }
 
-// observe is the SimNetwork observer.
-func (r *recorder) observe(event kademlia.RPCEvent) {
-	if event.Type != "FIND_NODE" && event.Type != "FIND_VALUE" {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.active {
-		return
-	}
-	r.probes++
-	if !event.OK {
-		r.failed++
-	}
-	r.write(map[string]any{
-		"ev": "probe", "lookup": r.id, "kind": r.kind, "node": shortID(r.origin.ID),
-		"to": shortID(IDFromAddress(event.To)), "rpc": event.Type, "ok": event.OK,
-	})
-}
-
-// measure records one lookup. run performs it and reports success, the closest
-// node it found (node lookups) and the node a value came from (value lookups).
-func (r *recorder) measure(kind string, origin kademlia.Contact, target *kademlia.KademliaID, run func() (ok bool, best, from string)) {
-	r.mu.Lock()
-	r.active, r.id, r.kind, r.origin, r.probes, r.failed = true, r.id+1, kind, origin, 0, 0
-	r.mu.Unlock()
-
-	ok, best, from := run()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.active = false
-	record := map[string]any{
-		"ev": "lookup", "lookup": r.id, "kind": kind, "node": shortID(origin.ID), "target": shortID(target),
-		"ok": ok, "probes": r.probes, "failed": r.failed,
-	}
-	if best != "" {
-		record["best"] = best
-	}
-	if from != "" {
-		record["from"] = from
-	}
-	r.write(record)
-}
-
-func (r *recorder) measureValue(network *Network, readerIndex int, key string) {
-	hash := kademlia.NewKademliaID(key)
-	r.measure("value", network.Contacts[readerIndex], hash, func() (bool, string, string) {
-		_, source, err := network.Nodes[readerIndex].LookupData(key)
-		from := ""
-		if source != nil {
-			from = shortID(source.ID)
-		}
-		return err == nil, "", from
-	})
-}
-
-func (r *recorder) finish() ([]byte, error) {
+func (r *runLog) finish() ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.out.Bytes(), nil

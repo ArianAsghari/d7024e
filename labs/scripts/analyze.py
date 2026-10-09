@@ -7,16 +7,21 @@ Standard library only (Python 3.8+), so the figures can be regenerated anywhere.
 
     python3 scripts/analyze.py experiments/results
 
-Log format (one JSON object per line):
-  run     starts a run: exp, n, seed, k (+ variant, retries, loss for reliability)
-  truth   (scalability) ground-truth closest node for the node lookup that follows
-  probe   one FIND_NODE / FIND_VALUE RPC sent during a lookup: lookup, node, to, rpc, ok
-  lookup  outcome of one lookup: lookup, kind (node|value), ok, probes, failed, best|from
+Log format (one JSON object per line). The lookup events are written by the
+nodes themselves (slog JSON handler, see kademlia/lookup.go):
+  lookup_probe     one FIND_NODE / FIND_VALUE RPC sent by a lookup:
+                   node_id, lookup_id, rpc, target, alpha, round, peer_id
+  lookup_complete  outcome of one lookup: node_id, lookup_id, rpc, success,
+                   probes, rounds, local, found_target, error
+The experiment adds labels:
+  run              starts a run: exp, n, seed, k, alpha (+ variant, retries, loss)
+  node_result      after a node lookup: target, closest (ground truth), best (found)
 
 A "probe" is one RPC issued by the lookup algorithm; retransmissions of the same
-RPC by the transport are not counted again. Lookups are averaged per run (one
-network, one seed); the reported spread is the standard deviation of those
-per-run means across seeds.
+RPC by the transport are not counted again. A "round" is one batch of up to
+alpha probes sent together, so rounds approximate the time a lookup needs.
+Lookups are averaged per run (one network, one seed); the reported spread is
+the standard deviation of those per-run means across seeds.
 """
 import csv
 import json
@@ -33,6 +38,7 @@ def read_runs(path):
     with open(path) as handle:
         for line in handle:
             record = json.loads(line)
+            record["ev"] = record.get("ev") or record.get("event")
             if record["ev"] == "run":
                 if run is not None:
                     yield run, records
@@ -158,37 +164,42 @@ def scalability(directory, summary):
     path = os.path.join(directory, "scalability.jsonl")
     if not os.path.exists(path):
         return
-    per_run = defaultdict(lambda: defaultdict(list))  # kind -> n -> per-run mean probes
+    kind_of = {"FIND_NODE": "node", "FIND_VALUE": "value"}
+    probes_run = defaultdict(lambda: defaultdict(list))  # kind -> n -> per-run mean probes
+    rounds_run = defaultdict(lambda: defaultdict(list))  # kind -> n -> per-run mean rounds
     accuracy = defaultdict(list)  # n -> per-run fraction of node lookups that found the true closest node
     lookups = defaultdict(int)
     failures = defaultdict(int)
-    k = None
+    k = alpha = None
     for run, records in read_runs(path):
-        n, k = run["n"], run["k"]
-        truth = {r["target"]: r["closest"] for r in records if r["ev"] == "truth"}
-        probes, hits = defaultdict(list), []
+        n, k, alpha = run["n"], run["k"], run["alpha"]
+        probes, rounds, hits = defaultdict(list), defaultdict(list), []
         for r in records:
-            if r["ev"] != "lookup":
-                continue
-            probes[r["kind"]].append(r["probes"])
-            lookups[(r["kind"], n)] += 1
-            if not r["ok"]:
-                failures[(r["kind"], n)] += 1
-            if r["kind"] == "node":
-                hits.append(1.0 if r.get("best") == truth.get(r["target"]) else 0.0)
-        for kind, values in probes.items():
-            per_run[kind][n].append(statistics.fmean(values))
+            if r["ev"] == "lookup_complete":
+                kind = kind_of[r["rpc"]]
+                probes[kind].append(r["probes"])
+                rounds[kind].append(r["rounds"])
+                lookups[(kind, n)] += 1
+                if not r["success"]:
+                    failures[(kind, n)] += 1
+            elif r["ev"] == "node_result":
+                hits.append(1.0 if r["best"] == r["closest"] else 0.0)
+        for kind in probes:
+            probes_run[kind][n].append(statistics.fmean(probes[kind]))
+            rounds_run[kind][n].append(statistics.fmean(rounds[kind]))
         if hits:
             accuracy[n].append(statistics.fmean(hits))
 
-    sizes = sorted(per_run["node"])
+    sizes = sorted(probes_run["node"])
     rows = []
     for kind in ("node", "value"):
         for n in sizes:
-            m, s = mean_std(per_run[kind][n])
+            m, s_ = mean_std(probes_run[kind][n])
+            rm, rs = mean_std(rounds_run[kind][n])
             rows.append({"kind": kind, "n": n, "log2n": round(math.log2(n), 3), "mean_probes": round(m, 3),
-                         "std_across_seeds": round(s, 3), "seeds": len(per_run[kind][n]),
-                         "lookups": lookups[(kind, n)], "failed_lookups": failures[(kind, n)]})
+                         "std_across_seeds": round(s_, 3), "mean_rounds": round(rm, 3), "std_rounds": round(rs, 3),
+                         "seeds": len(probes_run[kind][n]), "lookups": lookups[(kind, n)],
+                         "failed_lookups": failures[(kind, n)]})
     write_csv(os.path.join(directory, "scalability.csv"), rows)
 
     series, fits = [], {}
@@ -200,22 +211,29 @@ def scalability(directory, summary):
         series.append({"label": labels[kind] + " - measured", "points": pts, "color": PALETTE[idx]})
         series.append({"label": f"{kind}: fit {a:.2f}*log2(N) + {b:.2f}", "style": "dashed", "color": PALETTE[idx],
                        "points": [(p[0], a * math.log2(p[0]) + b, 0) for p in pts]})
-    svg_chart(os.path.join(directory, "scalability.svg"), f"Lookup cost vs network size (k={k})",
+    svg_chart(os.path.join(directory, "scalability.svg"), f"Lookup cost vs network size (k={k}, alpha={alpha})",
               "network size N (log scale)", "probes (RPCs) per lookup", series, xlog=True, ymin=0, xticks=sizes,
               note="points: mean over seeds, bars: +/- 1 std across seeds; dashed: least-squares fit a*log2(N)+b")
+    round_series = [{"label": f"{kind} lookup", "color": PALETTE[idx],
+                     "points": [(r["n"], r["mean_rounds"], r["std_rounds"]) for r in rows if r["kind"] == kind]}
+                    for idx, kind in enumerate(("node", "value"))]
+    svg_chart(os.path.join(directory, "scalability_rounds.svg"), f"Lookup rounds vs network size (k={k}, alpha={alpha})",
+              "network size N (log scale)", "rounds per lookup (sequential steps)", round_series, xlog=True, ymin=0,
+              xticks=sizes, note="a round = alpha probes sent together; rounds approximate the time a lookup needs")
 
     node = {r["n"]: r for r in rows if r["kind"] == "node"}
     value = {r["n"]: r for r in rows if r["kind"] == "value"}
     seeds = sorted({r["seeds"] for r in rows})
     summary.append("## Experiment 1 - lookup probes vs network size\n")
-    summary.append(f"k = {k}, {', '.join(map(str, seeds))} seeds per network size. "
-                   "Figure: `scalability.svg`, data: `scalability.csv`.\n")
-    summary.append("| N | log2 N | node lookup probes (mean +/- std) | value lookup probes (mean +/- std) | node lookup found true closest node |")
-    summary.append("|---|---|---|---|---|")
+    summary.append(f"k = {k}, alpha = {alpha}, {', '.join(map(str, seeds))} seeds per network size. "
+                   "Figures: `scalability.svg`, `scalability_rounds.svg`; data: `scalability.csv`.\n")
+    summary.append("| N | log2 N | node lookup probes (mean +/- std) | node lookup rounds | value lookup probes (mean +/- std) | value lookup rounds | node lookup found true closest node |")
+    summary.append("|---|---|---|---|---|---|---|")
     for n in sizes:
         summary.append(f"| {n} | {math.log2(n):.0f} | {node[n]['mean_probes']:.1f} +/- {node[n]['std_across_seeds']:.1f} | "
+                       f"{node[n]['mean_rounds']:.2f} | "
                        f"{value[n]['mean_probes']:.1f} +/- {value[n]['std_across_seeds']:.1f} | "
-                       f"{100 * statistics.fmean(accuracy[n]):.1f}% |")
+                       f"{value[n]['mean_rounds']:.2f} | {100 * statistics.fmean(accuracy[n]):.1f}% |")
     summary.append("")
     for kind, (a, b, r2) in fits.items():
         summary.append(f"Least-squares fit ({kind} lookups): probes = {a:.2f} * log2(N) + {b:.2f}  (R^2 = {r2:.3f}).")
@@ -233,41 +251,44 @@ def reliability(directory, summary):
         return
     rates = defaultdict(list)  # (variant, loss) -> per-run success rate
     probes = defaultdict(list)  # (variant, loss) -> per-run mean probes
-    retries_of = {}
+    rounds = defaultdict(list)  # (variant, loss) -> per-run mean rounds
+    params = {}  # variant -> (alpha, retries)
     n = k = None
     for run, records in read_runs(path):
         key = (run["variant"], run["loss"])
-        retries_of[run["variant"]] = run["retries"]
+        params[run["variant"]] = (run["alpha"], run["retries"])
         n, k = run["n"], run["k"]
-        lookups = [r for r in records if r["ev"] == "lookup"]
-        rates[key].append(statistics.fmean(1.0 if r["ok"] else 0.0 for r in lookups))
+        lookups = [r for r in records if r["ev"] == "lookup_complete"]
+        rates[key].append(statistics.fmean(1.0 if r["success"] else 0.0 for r in lookups))
         probes[key].append(statistics.fmean(r["probes"] for r in lookups))
+        rounds[key].append(statistics.fmean(r["rounds"] for r in lookups))
 
-    variants = sorted(retries_of, key=lambda v: retries_of[v])
+    variants = sorted(params, key=lambda v: (-params[v][1], -params[v][0]))
+    label = {v: f"alpha={params[v][0]}, retries={params[v][1]}" for v in variants}
     losses = sorted({loss for _, loss in rates})
     rows = []
     for v in variants:
         for loss in losses:
-            m, s = mean_std(rates[(v, loss)])
-            rows.append({"variant": v, "retries": retries_of[v], "loss": loss, "success_rate": round(m, 4),
-                         "std_across_seeds": round(s, 4), "seeds": len(rates[(v, loss)]),
-                         "mean_probes": round(statistics.fmean(probes[(v, loss)]), 2)})
+            m, s_ = mean_std(rates[(v, loss)])
+            rows.append({"variant": v, "alpha": params[v][0], "retries": params[v][1], "loss": loss,
+                         "success_rate": round(m, 4), "std_across_seeds": round(s_, 4), "seeds": len(rates[(v, loss)]),
+                         "mean_probes": round(statistics.fmean(probes[(v, loss)]), 2),
+                         "mean_rounds": round(statistics.fmean(rounds[(v, loss)]), 2)})
     write_csv(os.path.join(directory, "reliability.csv"), rows)
 
-    series = []
-    for idx, v in enumerate(variants):
-        series.append({"label": f"retries={retries_of[v]}", "color": PALETTE[idx],
-                       "points": [(100 * l, 100 * statistics.fmean(rates[(v, l)]), 100 * mean_std(rates[(v, l)])[1]) for l in losses]})
+    series = [{"label": label[v], "color": PALETTE[idx],
+               "points": [(100 * l, 100 * statistics.fmean(rates[(v, l)]), 100 * mean_std(rates[(v, l)])[1]) for l in losses]}
+              for idx, v in enumerate(variants)]
     # Expectation: one RPC attempt survives with (1-p)^2 (request and response),
     # so with R retries an RPC succeeds with q = 1-(1-(1-p)^2)^(R+1). A value held
     # by k replicas is lost only if every replica probe fails: 1-(1-q)^k.
-    for idx, v in enumerate(variants):
+    for idx, retries in enumerate(sorted({params[v][1] for v in variants}, reverse=True)):
         pts = []
         for l in losses:
-            q = 1 - (1 - (1 - l) ** 2) ** (retries_of[v] + 1)
+            q = 1 - (1 - (1 - l) ** 2) ** (retries + 1)
             pts.append((100 * l, 100 * (1 - (1 - q) ** k), 0))
-        series.append({"label": f"model, retries={retries_of[v]}: 1-(1-q)^k", "style": "dashed",
-                       "color": PALETTE[idx], "points": pts})
+        series.append({"label": f"model, retries={retries}: 1-(1-q)^k", "style": "dashed",
+                       "color": PALETTE[(len(variants) + idx) % len(PALETTE)], "points": pts})
     svg_chart(os.path.join(directory, "reliability.svg"), f"Value lookup success vs packet loss (N={n}, k={k})",
               "packet loss probability per packet (%)", "lookups that found the value (%) - axis starts at 70%",
               series, ymin=70, ymax=100, legend="lower",
@@ -277,21 +298,23 @@ def reliability(directory, summary):
     summary.append(f"N = {n}, k = {k}. Figure: `reliability.svg`, data: `reliability.csv`. "
                    "Success = the value was found and passed the hash check. "
                    "Cell = mean success rate +/- std across seeds.\n")
-    header = "| loss | " + " | ".join(f"retries={retries_of[v]}" for v in variants) + " |"
+    header = "| loss | " + " | ".join(label[v] for v in variants) + " |"
     summary.append(header)
     summary.append("|---|" + "---|" * len(variants))
     for loss in losses:
         cells = []
         for v in variants:
-            m, s = mean_std(rates[(v, loss)])
-            cells.append(f"{100 * m:.1f}% +/- {100 * s:.1f}")
+            m, s_ = mean_std(rates[(v, loss)])
+            cells.append(f"{100 * m:.1f}% +/- {100 * s_:.1f}")
         summary.append(f"| {100 * loss:.0f}% | " + " | ".join(cells) + " |")
     summary.append("")
-    summary.append("Mean probes per lookup:\n")
+    summary.append("Mean probes per lookup (messages) and mean rounds per lookup (latency proxy):\n")
     summary.append(header)
     summary.append("|---|" + "---|" * len(variants))
     for loss in losses:
-        summary.append(f"| {100 * loss:.0f}% | " + " | ".join(f"{statistics.fmean(probes[(v, loss)]):.1f}" for v in variants) + " |")
+        summary.append(f"| {100 * loss:.0f}% | " + " | ".join(
+            f"{statistics.fmean(probes[(v, loss)]):.1f} probes / {statistics.fmean(rounds[(v, loss)]):.1f} rounds"
+            for v in variants) + " |")
     summary.append("")
 
 

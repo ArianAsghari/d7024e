@@ -9,6 +9,7 @@ package experiment
 import (
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"math/rand"
 
 	"d7024e/kademlia"
@@ -16,9 +17,10 @@ import (
 
 // BuildConfig describes one randomly generated network.
 type BuildConfig struct {
-	N    int   // number of nodes
-	K    int   // bucket size / replication factor (0 = kademlia.DefaultK)
-	Seed int64 // seeds topology generation, bootstrap choice and simulated loss
+	N     int   // number of nodes
+	K     int   // bucket size / replication factor (0 = kademlia.DefaultK)
+	Alpha int   // lookup parallelism (0 = kademlia.DefaultAlpha)
+	Seed  int64 // seeds topology generation, bootstrap choice and simulated loss
 
 	// Sim holds latency, loss and retry settings. Its Seed is overwritten with
 	// BuildConfig.Seed.
@@ -76,6 +78,11 @@ func Build(cfg BuildConfig) (*Network, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfg.Alpha > 0 {
+			if err := node.SetAlpha(cfg.Alpha); err != nil {
+				return nil, err
+			}
+		}
 		if i > 0 {
 			bootstrap := network.Contacts[rng.Intn(i)]
 			if err := node.Join(bootstrap); err != nil {
@@ -86,6 +93,24 @@ func Build(cfg BuildConfig) (*Network, error) {
 		network.Contacts = append(network.Contacts, contact)
 	}
 	return network, nil
+}
+
+// SetAlpha changes the lookup parallelism of every node.
+func (network *Network) SetAlpha(alpha int) error {
+	for _, node := range network.Nodes {
+		if err := node.SetAlpha(alpha); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetLookupLogger makes every node log its lookups to logger (nil disables).
+// Simulated nodes are silent until this is called.
+func (network *Network) SetLookupLogger(logger *slog.Logger) {
+	for _, node := range network.Nodes {
+		node.SetLookupLogger(logger)
+	}
 }
 
 // Closest returns the contact in the network whose ID is nearest (by XOR) to

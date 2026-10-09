@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -106,36 +107,37 @@ func TestScalabilityLogIsCompleteAndConsistent(t *testing.T) {
 	}
 
 	counts := map[string]int{}
-	truths := map[string]string{}
-	probesSeen := map[float64]int{} // lookup id -> probe events, per run
+	probesSeen := map[string]int{} // "node/lookup" -> lookup_probe records, per run
 	hits, nodeLookups := 0, 0
 	for _, r := range parseLog(t, out.Bytes()) {
-		ev := r["ev"].(string)
-		counts[ev]++
-		switch ev {
+		name, _ := r["ev"].(string)
+		if name == "" {
+			name, _ = r["event"].(string)
+		}
+		counts[name]++
+		switch name {
 		case "run":
-			probesSeen = map[float64]int{}
-		case "truth":
-			truths[r["target"].(string)] = r["closest"].(string)
-		case "probe":
-			probesSeen[r["lookup"].(float64)]++
-		case "lookup":
-			if r["ok"] != true || r["probes"].(float64) < 1 {
-				t.Fatalf("lookup without loss must succeed and send probes: %v", r)
+			probesSeen = map[string]int{}
+			if r["alpha"] != float64(kademlia.DefaultAlpha) || r["k"] != float64(kademlia.DefaultK) {
+				t.Fatalf("run label lacks the parameters: %v", r)
 			}
-			if float64(probesSeen[r["lookup"].(float64)]) != r["probes"].(float64) {
-				t.Fatalf("lookup summary says %v probes but %d probe events were logged: %v",
-					r["probes"], probesSeen[r["lookup"].(float64)], r)
+		case "lookup_probe":
+			probesSeen[r["node_id"].(string)+"/"+jsonNumber(r["lookup_id"])]++
+		case "lookup_complete":
+			if r["success"] != true || r["probes"].(float64) < 1 || r["rounds"].(float64) < 1 {
+				t.Fatalf("lookup without loss must succeed, send probes and take rounds: %v", r)
 			}
-			if r["kind"] == "node" {
-				nodeLookups++
-				if r["best"] == truths[r["target"].(string)] {
-					hits++
-				}
+			if got := probesSeen[r["node_id"].(string)+"/"+jsonNumber(r["lookup_id"])]; float64(got) != r["probes"].(float64) {
+				t.Fatalf("lookup_complete says %v probes but %d lookup_probe records were logged: %v", r["probes"], got, r)
+			}
+		case "node_result":
+			nodeLookups++
+			if r["best"] == r["closest"] {
+				hits++
 			}
 		}
 	}
-	if counts["run"] != 4 || counts["lookup"] != 4*(6+4) || counts["truth"] != 4*6 || counts["probe"] == 0 {
+	if counts["run"] != 4 || counts["lookup_complete"] != 4*(6+4) || counts["node_result"] != 4*6 || counts["lookup_probe"] == 0 {
 		t.Fatalf("event counts = %v", counts)
 	}
 	if hits < nodeLookups*9/10 {
@@ -143,10 +145,33 @@ func TestScalabilityLogIsCompleteAndConsistent(t *testing.T) {
 	}
 }
 
+func jsonNumber(v any) string {
+	n, _ := v.(float64)
+	return strconv.FormatFloat(n, 'f', 0, 64)
+}
+
+func TestExperimentLogsDoNotContainWallClockTimes(t *testing.T) {
+	cfg := ScalabilityConfig{Sizes: []int{16}, Seeds: []int64{1}, NodeLookups: 2, ValueLookups: 1, Workers: 1}
+	var out bytes.Buffer
+	if err := RunScalability(&out, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{`"time"`, `"elapsed_us"`, `"level"`, `"peer_address"`} {
+		if strings.Contains(out.String(), forbidden) {
+			t.Fatalf("log contains %s", forbidden)
+		}
+	}
+	for _, r := range parseLog(t, out.Bytes()) {
+		if id, ok := r["node_id"].(string); ok && len(id) != 16 {
+			t.Fatalf("node IDs should be abbreviated to 16 hex digits: %q", id)
+		}
+	}
+}
+
 func TestReliabilityLogCoversTheLossSweep(t *testing.T) {
 	cfg := ReliabilityConfig{
 		N: 40, Seeds: []int64{1, 2}, Losses: []float64{0, 1}, Values: 3, Lookups: 5, Workers: 2,
-		Variants: []Variant{{Name: "r0", Retries: 0}, {Name: "r2", Retries: 2}},
+		Variants: []Variant{{Name: "a3r0", Alpha: 3, Retries: 0}, {Name: "a1r2", Alpha: 1, Retries: 2}},
 	}
 	var out bytes.Buffer
 	if err := RunReliability(&out, cfg); err != nil {
@@ -155,23 +180,48 @@ func TestReliabilityLogCoversTheLossSweep(t *testing.T) {
 	var run record
 	runs, lookups := 0, 0
 	for _, r := range parseLog(t, out.Bytes()) {
-		switch r["ev"] {
-		case "run":
+		switch {
+		case r["ev"] == "run":
 			run = r
 			runs++
-		case "lookup":
+		case r["event"] == "lookup_probe":
+			if r["alpha"] != run["alpha"] {
+				t.Fatalf("probe was sent with alpha %v, run label says %v", r["alpha"], run["alpha"])
+			}
+		case r["event"] == "lookup_complete":
 			lookups++
 			total := run["loss"] == float64(1)
-			if r["ok"] == total { // everything lost => must fail; no loss => must succeed
-				t.Fatalf("loss=%v lookup ok=%v", run["loss"], r["ok"])
-			}
-			if total && r["failed"] != r["probes"] {
-				t.Fatalf("with total loss every probe must fail: %v", r)
+			if r["success"] == total { // everything lost => must fail; no loss => must succeed
+				t.Fatalf("loss=%v lookup success=%v", run["loss"], r["success"])
 			}
 		}
 	}
 	if runs != 2*2*2 || lookups != runs*5 {
 		t.Fatalf("runs=%d lookups=%d", runs, lookups)
+	}
+}
+
+func TestNetworkSettersReachEveryNode(t *testing.T) {
+	network, err := Build(BuildConfig{N: 8, Alpha: 2, Seed: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range network.Nodes {
+		if node.Alpha() != 2 {
+			t.Fatalf("alpha = %d, want 2", node.Alpha())
+		}
+	}
+	if err := network.SetAlpha(5); err != nil {
+		t.Fatal(err)
+	}
+	if network.Nodes[3].Alpha() != 5 {
+		t.Fatal("SetAlpha did not reach every node")
+	}
+	if err := network.SetAlpha(0); err == nil {
+		t.Fatal("alpha 0 must be rejected")
+	}
+	if _, err := Build(BuildConfig{N: 3, Alpha: -1, Seed: 1}); err != nil {
+		t.Fatalf("a negative alpha selects the default: %v", err)
 	}
 }
 
