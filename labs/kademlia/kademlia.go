@@ -21,6 +21,7 @@ const MaxValueSize = 4 * 1024
 var (
 	ErrInvalidHash    = errors.New("hash must be a 256-bit hexadecimal string")
 	ErrHashMismatch   = errors.New("value does not match its hash")
+	ErrValueConflict  = errors.New("content-addressed value would replace a mutable value")
 	ErrInvalidTarget  = errors.New("lookup target has no ID")
 	ErrNoRoutingTable = errors.New("kademlia has no routing table")
 	ErrNoNetwork      = errors.New("kademlia has no network client")
@@ -57,6 +58,7 @@ type Kademlia struct {
 	alpha        int
 	lookupLogger *slog.Logger
 	lookupID     atomic.Uint64
+	validator    ValueValidator
 
 	dataMu sync.RWMutex
 	data   map[string][]byte
@@ -139,7 +141,9 @@ func (kademlia *Kademlia) LookupContact(target *Contact) (contacts []Contact, er
 }
 
 // LookupData searches locally and then performs an iterative FIND_VALUE
-// lookup. Any returned value is accepted only when SHA-256(value) equals key.
+// lookup. Remote values must match their hash or pass the configured validator
+// before being cached. A local hit returns the last accepted value; it does not
+// poll peers for newer mutable values.
 func (kademlia *Kademlia) LookupData(hash string) (value []byte, source *Contact, err error) {
 	trace := kademlia.startLookup("FIND_VALUE", hash)
 	defer func() { trace.complete(err, err == nil, err == nil && source == nil, false) }()
@@ -211,6 +215,27 @@ func (kademlia *Kademlia) Store(data []byte) (string, error) {
 	}
 
 	key := hashData(data)
+	return key.String(), kademlia.StoreAt(key, data)
+}
+
+// StoreAt publishes data under an explicit key to the k closest nodes. Each
+// destination validates the pair through StoreValue, including this node when
+// it is among the k closest. Errors are joined; successful replicas are kept
+// even if another destination rejects the value. The caller can use StoreAt
+// to publish a mutable pointer without changing its key when the value changes.
+func (kademlia *Kademlia) StoreAt(key *KademliaID, data []byte) error {
+	if err := validateValueSize(data); err != nil {
+		return err
+	}
+	if key == nil {
+		return ErrInvalidHash
+	}
+	if kademlia.routingTable == nil {
+		return ErrNoRoutingTable
+	}
+	keyCopy := *key
+	key = &keyCopy
+	data = cloneBytes(data)
 	target := NewContact(key, "")
 	contacts, lookupErr := kademlia.LookupContact(&target)
 	contacts = append(contacts, kademlia.routingTable.me)
@@ -240,26 +265,7 @@ func (kademlia *Kademlia) Store(data []byte) (string, error) {
 		}
 	}
 
-	return key.String(), errors.Join(storeErrors...)
-}
-
-// StoreValue validates and stores an incoming key-value pair. Person A's
-// STORE RPC handler can call this method before acknowledging the request.
-func (kademlia *Kademlia) StoreValue(key *KademliaID, data []byte) error {
-	if err := validateValueSize(data); err != nil {
-		return err
-	}
-	if key == nil || !dataMatchesHash(key, data) {
-		return ErrHashMismatch
-	}
-
-	kademlia.dataMu.Lock()
-	defer kademlia.dataMu.Unlock()
-	if kademlia.data == nil {
-		kademlia.data = make(map[string][]byte)
-	}
-	kademlia.data[key.String()] = cloneBytes(data)
-	return nil
+	return errors.Join(storeErrors...)
 }
 
 // DataEntry is a single locally stored key-value pair, exposed for display
@@ -287,7 +293,9 @@ func (kademlia *Kademlia) localValue(key *KademliaID) ([]byte, bool) {
 	defer kademlia.dataMu.RUnlock()
 
 	value, ok := kademlia.data[key.String()]
-	if !ok || !dataMatchesHash(key, value) {
+	// Every write passes through StoreValue. Mutable values were validated on
+	// acceptance and must remain readable even though their hash is not the key.
+	if !ok {
 		return nil, false
 	}
 	return cloneBytes(value), true

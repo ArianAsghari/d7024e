@@ -151,7 +151,11 @@ func (kademlia *Kademlia) republish(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := kademlia.Store(entry.Value); err != nil {
+		key, err := parseHash(entry.Key)
+		if err == nil {
+			err = kademlia.StoreAt(key, entry.Value)
+		}
+		if err != nil {
 			publishErrors = append(publishErrors, fmt.Errorf("republish %s: %w", entry.Key, err))
 		}
 	}
@@ -160,7 +164,7 @@ func (kademlia *Kademlia) republish(ctx context.Context) error {
 
 // RunRepublisher runs one replication pass per interval until ctx is canceled.
 // Passes never overlap. Cancellation stops between stored values; an in-flight
-// Store completes using the transport's configured RPC timeout/retry policy.
+// StoreAt completes using the transport's configured RPC timeout/retry policy.
 func (kademlia *Kademlia) RunRepublisher(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		return errors.New("replication interval must be positive")

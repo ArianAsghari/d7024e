@@ -191,7 +191,7 @@ func (network *Network) SendFindDataMessage(contact *Contact, hash *KademliaID) 
 }
 
 // SendStoreMessage performs a STORE RPC. The remote side verifies K = hash(V)
-// before acknowledging the request.
+// or accepts the value through its validator before acknowledging the request.
 func (network *Network) SendStoreMessage(contact *Contact, hash *KademliaID, data []byte) error {
 	if err := validateValueSize(data); err != nil {
 		return err

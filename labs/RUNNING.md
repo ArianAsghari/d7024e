@@ -54,7 +54,9 @@ The initial core PR, [PR #1](https://github.com/ArianAsghari/d7024e/pull/1), was
 | Explicit value-size limit | Implemented; 4 KiB (4096 bytes), enforced at store and retrieval boundaries |
 | Probe and outcome logging | Implemented; JSON events with per-lookup probe/round counts |
 | Report thread-safety section | Written in `../REPORT.md` |
-| Version records, no forks/rollback, and catch-up | Sprint 3; not implemented in this change |
+| Mutable-pointer core hook | Implemented: `ValueValidator`, `SetValueValidator`, `StoreAt`, and key-preserving replication |
+| Simulated network, 1000-node test, and experiments | Integrated from the team's Sprint-2 work; see `experiment/` and `experiments/results/` |
+| Signed version records, ownership, no forks/rollback, and registry CLI | Kim's remaining registry integration; the validator can fetch missing records through `LookupData` |
 
 Joining works as follows:
 
@@ -174,7 +176,7 @@ For a short local refresh demonstration, set `REFRESH_INTERVAL=5s`. In simulator
 
 The maximum value is **4096 bytes (4 KiB)**, inclusive. Empty values are allowed. Values use a single JSON-encoded UDP datagram: 4096 bytes become 5464 base64 characters, with additional RPC metadata. This conservative limit accommodates smaller local UDP send limits as well as the protocol's 65,507-byte IPv4 payload ceiling. A 32 KiB candidate limit failed a real loopback test on the development Mac with `message too long`; the 4 KiB boundary is tested with STORE and FIND_VALUE. Large datagrams can still fragment and be lost; the existing retry policy applies. Larger packages would require chunking or a separate TCP value-transfer plane.
 
-`Store`, `StoreValue` (including incoming STORE handlers), outgoing STORE, and acceptance of FIND_VALUE bytes enforce the same limit. Oversized values return `ErrValueTooLarge` and are never cached or partially stored. CLI `put` reads at most 4097 bytes before validation, and reports rejection as `put failed`.
+`Store`, `StoreAt`, `StoreValue` (including incoming STORE handlers), outgoing UDP STORE, and acceptance of FIND_VALUE bytes enforce the same limit. Oversized values return `ErrValueTooLarge` and are never cached or partially stored. CLI `put` reads at most 4097 bytes before validation, and reports rejection as `put failed`.
 
 ## Lookup instrumentation and experiment integration
 
@@ -203,7 +205,23 @@ if err := node.SetAlpha(3); err != nil {
 | `found_target` | FIND_NODE returned the exact target among its contacts; use this when measuring exact-node discovery. |
 | `local` | FIND_VALUE was served from the local store, with zero probes. |
 
-Parallel rounds wait for their slowest RPC, including the final value-lookup round, so no lookup RPC is left running after return. Alpha changes concurrency and latency; it does **not** guarantee fewer total probes or a flat probes/log2(N) ratio. Compare alpha 1 and 3 with the same topology/seeds, `k`, retry policy, and cache state. Exclude join/refresh/replication setup lookups from query measurements by controlling worker lifetime and the logging window. The 1000+ node simulator and the two full experiments are separate team work; they have not been run as part of this core change.
+Parallel rounds wait for their slowest RPC, including the final value-lookup round, so no lookup RPC is left running after return. Alpha changes concurrency and latency; it does **not** guarantee fewer total probes or a flat probes/log2(N) ratio. Compare alpha 1 and 3 with the same topology/seeds, `k`, retry policy, and cache state. Exclude join/refresh/replication setup lookups from query measurements by controlling worker lifetime and the logging window. The team's simulated network and experiments are now integrated. The normal test suite includes `TestThousandNodeNetwork`; do not use `-short` when checking the 1000-node requirement.
+
+From `labs/`, run the complete experiments and external analysis with:
+
+```sh
+go run ./cmd/experiments -out experiments/results
+python3 scripts/analyze.py experiments/results
+```
+
+For a smoke test that leaves the committed full results intact:
+
+```sh
+go run ./cmd/experiments -quick -seeds 2 -out /tmp/kademlia-experiment-smoke
+python3 scripts/analyze.py /tmp/kademlia-experiment-smoke
+```
+
+The full default run uses ten seeds per configuration. The analysis writes CSV tables, SVG plots, and a Markdown summary. See [the report](../REPORT.md#experimental-evaluation) for methodology, expectations, results, and limitations.
 
 ## Docker
 
@@ -269,16 +287,23 @@ The `total:` line from `go tool cover` is the combined statement coverage. The i
 | --- | --- |
 | `main.go` | Startup configuration, joining, worker lifetime, and CLI |
 | `kademlia/kademlia.go`, `kademlia/lookup.go` | Parallel node/value lookup, JSON instrumentation, replication, size/hash verification, and local values |
+| `kademlia/value.go` | Mutable-value validation, copied callback arguments, and revalidation of concurrent updates |
 | `kademlia/maintenance.go` | Join, idle bucket refresh, refresh targets, and periodic replication |
 | `kademlia/routingtable.go` | Assign contacts to buckets and select nearest peers |
 | `kademlia/bucket.go` | Contact recency, PING eviction, and per-bucket locking |
 | `kademlia/network.go` | UDP serialization, RPC correlation/timeouts/retries, and request handlers |
+| `kademlia/simnetwork.go` | Simulated RPC transport with seeded latency, loss, retries, and node removal |
+| `experiment/`, `cmd/experiments/`, `scripts/analyze.py` | Network generation, measurements, 1000-node test, experiment CLI, and external analysis |
 | `LAB-SPEC.md` | Required behavior and grading requirements |
 | `PART2-DESIGN.md` | Future package registry and version-history design |
 
 The rest of the repository contains course lectures and tutorials; the runnable project is under `labs/`.
 
-## What Part 2 will add later
+## Part 2 integration handoff
+
+The core is ready for Kim's registry package. Before serving RPCs, register the registry callback with `node.SetValueValidator(validator)`, using the signature `func(key *KademliaID, current, incoming []byte) error`. Return nil only after validating the key, ownership, signature, and history. When records are missing, fetch and verify them by hash through this node's `LookupData` inside the callback. An error rejects the pointer update. The callback runs outside core locks and must handle concurrent calls, revalidation after competing writes, and identical updates from retries or replication.
+
+Publish immutable blobs and version records with `Store`; publish the signed pointer at its namespace key with `StoreAt`. Each destination validates independently. `StoreAt` does not prevalidate remote updates, allowing `publish --force` to send attempts that receivers must reject. `FIND_VALUE` returns the last accepted value, and replication preserves its original key. `LookupData` uses a local accepted value when present; it does not poll for a newer global head. The registry and CLI are not wired into `main.go` yet.
 
 A package name such as `example.org:calculator` will have a signed latest pointer pointing to a signed version record. Each version record links to its package blob and to the previous version record:
 
@@ -288,4 +313,6 @@ latest -> record v3 -> record v2 -> record v1
            blob v3      blob v2      blob v1
 ```
 
-Versions must have a total order: any two can be compared consistently. Nodes must reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it must fetch and validate the missing v2 link before advancing. Signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. These features remain separate from the current Part 1 storage implementation.
+Versions must have a total order: any two can be compared consistently. Nodes must reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it must fetch and validate the missing v2 link before advancing. Signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. Those registry policies remain Kim's work; the core hook supports their enforcement.
+
+After integration, exercise valid publication and installation, wrong-owner/signature rejection, forks, rollback, missing-history catch-up, and both `--force` and `--prev`. Check `show DOMAIN:PACKAGE`, `show dns DOMAIN`, and decoded `show ds`. Rerun the race/coverage suite with at least 80% combined statement coverage, prepare the 50-container demonstration, finish the report's registry sections, and upload the final report to Canvas before the review.

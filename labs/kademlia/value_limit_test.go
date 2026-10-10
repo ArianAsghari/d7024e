@@ -21,6 +21,12 @@ func TestValueSizeLimitAtAllStoreEntryPoints(t *testing.T) {
 	if err := node.StoreValue(key, value); !errors.Is(err, ErrValueTooLarge) {
 		t.Fatalf("oversized StoreValue = %v", err)
 	}
+	if err := node.StoreAt(key, value); !errors.Is(err, ErrValueTooLarge) {
+		t.Fatalf("oversized StoreAt = %v", err)
+	}
+	if err := node.StoreAt(nil, []byte("pointer")); !errors.Is(err, ErrInvalidHash) {
+		t.Fatalf("nil-key StoreAt = %v", err)
+	}
 	if err := NewNetwork(rt.me).SendStoreMessage(nil, key, value); !errors.Is(err, ErrValueTooLarge) {
 		t.Fatalf("oversized network store = %v", err)
 	}
