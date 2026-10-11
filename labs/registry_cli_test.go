@@ -113,6 +113,28 @@ func (e *cliEnv) replaceKeyWithStranger(domain string) {
 	}
 }
 
+func TestPublishReportsPartialPointerUpdate(t *testing.T) {
+	e := newCLIEnv(t, 3)
+	e.expect(0, "keygen example.com", "created private key")
+	e.write("package.txt", "package bytes")
+	e.nodes[1].SetValueValidator(func(_ *kademlia.KademliaID, _, _ []byte) error {
+		return errors.New("replica refused update")
+	})
+	e.expectOneLine(0, "publish example.com:demo:1.0.0 package.txt",
+		"publish failed:", "updating the latest pointer", "replica refused update",
+		"any replicas that accepted the latest pointer keep it")
+	key := registry.PointerKey("example.com", "demo")
+	for i, node := range e.nodes {
+		stored := false
+		for _, entry := range node.Entries() {
+			stored = stored || entry.Key == key
+		}
+		if stored != (i != 1) {
+			t.Fatalf("node %d stored pointer = %v; want only the two accepting replicas", i, stored)
+		}
+	}
+}
+
 func TestKeygenCreatesKeyAndRegistersOwner(t *testing.T) {
 	e := newCLIEnv(t, 3)
 	out := e.expect(0, "keygen example.com", "created private key "+filepath.Join(e.keysDir, "example.com"))

@@ -1,8 +1,10 @@
 package kademlia
 
 import (
+	"errors"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -101,6 +103,79 @@ func TestNetworkRetriesAndTimesOut(t *testing.T) {
 	}
 	if elapsed < 35*time.Millisecond {
 		t.Fatalf("RPC returned too quickly (%v), expected two timeout attempts", elapsed)
+	}
+}
+
+func TestNetworkStoreWaitsForValidationAndMayCommitAfterTimeout(t *testing.T) {
+	for _, expires := range []bool{true, false} {
+		t.Run(map[bool]string{true: "timeout is not cancellation", false: "longer timeout receives acknowledgement"}[expires], func(t *testing.T) {
+			serverNetwork, server, contact := startTestNode(t, testID(20))
+			defer serverNetwork.Close()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var started, unblocked sync.Once
+			unblock := func() { unblocked.Do(func() { close(release) }) }
+			defer unblock()
+			server.SetValueValidator(func(_ *KademliaID, _, _ []byte) error {
+				started.Do(func() { close(entered) })
+				<-release // Simulate fetching missing history before accepting.
+				return nil
+			})
+			client := NewNetwork(NewContact(testID(10), "127.0.0.1:9999"))
+			client.Timeout = time.Second
+			if expires {
+				client.Timeout = 20 * time.Millisecond
+			}
+			key, value := testID(1), []byte("signed latest pointer")
+			result := make(chan error, 1)
+			go func() { result <- client.SendStoreMessage(&contact, key, value) }()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("STORE never reached validation")
+			}
+			if expires {
+				select {
+				case err := <-result:
+					var timeout net.Error
+					if !errors.As(err, &timeout) || !timeout.Timeout() {
+						t.Fatalf("STORE error = %v, want a timeout", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("STORE did not time out")
+				}
+			} else {
+				select {
+				case err := <-result:
+					t.Fatalf("STORE returned before validation finished: %v", err)
+				case <-time.After(100 * time.Millisecond):
+					// Longer than all three attempts of the short-timeout case.
+				}
+			}
+			if _, ok := server.localValue(key); ok {
+				t.Fatal("pointer was stored before validation accepted it")
+			}
+			unblock()
+			if !expires {
+				select {
+				case err := <-result:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("STORE did not acknowledge accepted value")
+				}
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				if got, ok := server.localValue(key); ok && string(got) == string(value) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("accepted STORE was not applied")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
 }
 

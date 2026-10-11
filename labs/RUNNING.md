@@ -160,6 +160,7 @@ Stopping and restarting all nodes loses their in-memory stores. Disk persistence
 | `BOOTSTRAP` | Empty | Existing peer's IP:port or hostname:port. Empty starts the first node. |
 | `REPLICATION_INTERVAL` | `1h` | Positive duration such as `5s`, `30s`, or `1h`. |
 | `REFRESH_INTERVAL` | `1h` | Scan interval and idle threshold for bucket refresh; must be positive. |
+| `RPC_TIMEOUT` | `500ms` | Response deadline per outgoing UDP attempt; positive duration. Two retries allow three attempts. Try `2s` when a registry STORE needs longer to fetch and validate history. |
 | `ALPHA` | `3` | Maximum concurrent probes per lookup round; positive integer. |
 | `HEADLESS` | Empty | Set to `1` to run without a CLI until SIGINT/SIGTERM. Used for service containers. |
 | `OWNERS_FILE` | `owners.json` | Fake-DNS JSON table mapping domain names to public keys; share it between nodes. |
@@ -251,6 +252,10 @@ docker service logs kademlia_kademliaNodes
 
 The configuration starts one bootstrap and five joining nodes. They run headlessly so a closed stdin does not terminate the service. Bootstrap startup can race with joining containers; failed joins exit with an error and the service's restart policy retries them.
 
+For a registry demo with slower STORE validation, set the per-attempt deadline when deploying, for example `RPC_TIMEOUT=2s docker stack deploy --resolve-image never -c docker-compose.yml kademlia`. This value is a starting point to measure, not a guarantee for arbitrarily long histories. It also increases the wait for unreachable peers. For an additional interactive container, pass `-e RPC_TIMEOUT=2s` to `docker run`; changing the services' environment does not configure that separate publisher.
+
+Record `git rev-parse HEAD` alongside the image used for a demonstration. The mutable-cache fix is on `Sprint-2` from commit `dca4a65`; `main` at `3611512` predates it. Pull `Sprint-2`, rebuild the image, and recreate all demo nodes before retesting. Rebuilding the image alone does not replace running containers. A fresh network loses its in-memory package data, so start all nodes before publishing the demo versions again.
+
 For 50 nodes total:
 
 ```sh
@@ -311,6 +316,8 @@ The rest of the repository contains course lectures and tutorials; the runnable 
 The registry is wired into startup through `installRegistry`, which calls `registry/dht.Install` before serving RPCs. It registers the callback with `node.SetValueValidator(validator)`, using the signature `func(key *KademliaID, current, incoming []byte) error`. The callback returns nil only after validating the key, ownership, signature, and history. When records are missing, it fetches and verifies them by hash through this node's `LookupData`. An error rejects the pointer update. The callback runs outside core locks and handles concurrent calls, revalidation after competing writes, and identical updates from retries or replication.
 
 Publish immutable blobs and version records with `Store`; publish the signed pointer at its namespace key with `StoreAt`. Each destination validates independently. `StoreAt` does not prevalidate remote updates, allowing `publish --force` to send attempts that receivers must reject. `FIND_VALUE` returns the last accepted value, and replication preserves its original key. Lookup results are validated, but only immutable values are cached. A reader outside the replicas therefore looks up the pointer again on its next install. Explicit STORE replicas can still return their local pointer without polling: a replica that missed an update may be behind.
+
+A STORE reply is sent after validation and storage. Catch-up can therefore outlast the sender's deadline. A timeout means the sender did not receive confirmation; it does not cancel the receiver's work. The receiver may subsequently accept the pointer, and other replicas may already have accepted it. Publication is not an atomic transaction across replicas, and accepted writes are not rolled back when another destination fails. The CLI reports that accepted pointer updates remain in place. Inspect the resulting version before deciding on another publication; blindly repeating the same version can be rejected as a fork if it creates a different predecessor link. A longer publisher deadline mitigates slow acknowledgements but does not provide atomic publication or guarantee globally freshest reads.
 
 A package name such as `example.org:calculator` has a signed latest pointer pointing to a signed version record. Each version record links to its package blob and to the previous version record:
 

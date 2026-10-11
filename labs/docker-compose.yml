@@ -12,6 +12,7 @@ services:
     environment:
       HEADLESS: "1"
       REPLICATION_INTERVAL: "1h"
+      RPC_TIMEOUT: "${RPC_TIMEOUT:-500ms}"
       OWNERS_FILE: "/shared/owners.json"
     volumes:
       - registry_shared:/shared
@@ -30,6 +31,7 @@ services:
       HEADLESS: "1"
       BOOTSTRAP: "bootstrap:8000"
       REPLICATION_INTERVAL: "1h"
+      RPC_TIMEOUT: "${RPC_TIMEOUT:-500ms}"
       OWNERS_FILE: "/shared/owners.json"
     volumes:
       - registry_shared:/shared

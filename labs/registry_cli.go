@@ -141,7 +141,13 @@ func publishCommand(out io.Writer, node *kademlia.Kademlia, args []string) {
 		Force:   parsed.Force,
 	}, priv)
 	if err != nil {
-		fmt.Fprintf(out, "publish failed: %s\n", oneLine(err))
+		message := oneLine(err)
+		if res.RecordHash != "" {
+			// Reaching the pointer update does not make it a transaction:
+			// one replica can reject or time out while others accept it.
+			message += "; any replicas that accepted the latest pointer keep it"
+		}
+		fmt.Fprintf(out, "publish failed: %s\n", message)
 		return
 	}
 	fmt.Fprintf(out, "published %s (package %s, record %s)\n", parsed.Spec, registry.ShortHash(res.BlobHash), registry.ShortHash(res.RecordHash))

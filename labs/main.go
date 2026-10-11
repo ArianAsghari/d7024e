@@ -110,6 +110,13 @@ func runNode(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	routingTable := kademlia.NewRoutingTable(me)
 	network := kademlia.NewNetwork(me)
+	if raw := os.Getenv("RPC_TIMEOUT"); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err != nil || timeout <= 0 {
+			return fmt.Errorf("RPC_TIMEOUT must be a positive duration, e.g. 500ms or 2s")
+		}
+		network.Timeout = timeout
+	}
 	node := kademlia.NewKademlia(routingTable, network)
 	if err := node.SetAlpha(alpha); err != nil {
 		return err

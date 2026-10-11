@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -376,6 +377,7 @@ func TestRunNodeRejectsInvalidConfiguration(t *testing.T) {
 		{"PORT", "0"}, {"PORT", "65536"},
 		{"REPLICATION_INTERVAL", "never"}, {"REPLICATION_INTERVAL", "0s"},
 		{"REFRESH_INTERVAL", "never"}, {"REFRESH_INTERVAL", "0s"},
+		{"RPC_TIMEOUT", "never"}, {"RPC_TIMEOUT", "0s"}, {"RPC_TIMEOUT", "-1s"},
 		{"ALPHA", "zero"}, {"ALPHA", "0"}, {"ALPHA", "-3"},
 		{"BOOTSTRAP", "not-an-address"},
 	} {
@@ -384,6 +386,7 @@ func TestRunNodeRejectsInvalidConfiguration(t *testing.T) {
 			t.Setenv("PORT", strconv.Itoa(reserveTestPort(t)))
 			t.Setenv("REPLICATION_INTERVAL", "1h")
 			t.Setenv("REFRESH_INTERVAL", "1h")
+			t.Setenv("RPC_TIMEOUT", "500ms")
 			t.Setenv("ALPHA", "3")
 			t.Setenv("BOOTSTRAP", "")
 			t.Setenv(tc.key, tc.value)
@@ -391,6 +394,58 @@ func TestRunNodeRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatal("invalid configuration was accepted")
 			}
 		})
+	}
+}
+
+// A delayed PING would succeed with the default 500ms deadline. With the
+// configured 20ms deadline, all three attempts expire before its reply.
+func TestRunNodeUsesRPCTimeout(t *testing.T) {
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	stop := make(chan struct{})
+	defer func() {
+		close(stop)
+		peer.Close()
+		<-done
+	}()
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		n, addr, err := peer.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		var request struct {
+			RequestID string `json:"request_id"`
+		}
+		if json.Unmarshal(buf[:n], &request) != nil {
+			return
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+		}
+		reply, _ := json.Marshal(map[string]string{"type": "PING_REPLY", "request_id": request.RequestID})
+		_, _ = peer.WriteToUDP(reply, addr)
+	}()
+	t.Setenv("BIND_IP", "127.0.0.1")
+	t.Setenv("PORT", strconv.Itoa(reserveTestPort(t)))
+	t.Setenv("BOOTSTRAP", "")
+	t.Setenv("HEADLESS", "")
+	t.Setenv("RPC_TIMEOUT", "20ms")
+	var out bytes.Buffer
+	commands := "ping " + peer.LocalAddr().String() + "\nexit\n"
+	if err := runNode(context.Background(), strings.NewReader(commands), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ping failed:") || !strings.Contains(out.String(), "after 3 attempt(s)") {
+		t.Fatalf("configured timeout was not used: %s", out.String())
 	}
 }
 
