@@ -252,9 +252,9 @@ docker service logs kademlia_kademliaNodes
 
 The configuration starts one bootstrap and five joining nodes. They run headlessly so a closed stdin does not terminate the service. Bootstrap startup can race with joining containers; failed joins exit with an error and the service's restart policy retries them.
 
-For a registry demo with slower STORE validation, set the per-attempt deadline when deploying, for example `RPC_TIMEOUT=2s docker stack deploy --resolve-image never -c docker-compose.yml kademlia`. This value is a starting point to measure, not a guarantee for arbitrarily long histories. It also increases the wait for unreachable peers. For an additional interactive container, pass `-e RPC_TIMEOUT=2s` to `docker run`; changing the services' environment does not configure that separate publisher.
+For the registry demo, use the per-attempt deadline tested in Kim's rebuilt 50-container run: `RPC_TIMEOUT=2s docker stack deploy --resolve-image never -c docker-compose.yml kademlia`. That run reported no timeouts in eight publications at 2 s, versus two in eight at 500 ms. This small sample does not guarantee that longer histories cannot time out; the larger deadline also increases the wait for unreachable peers. For an additional interactive container, pass `-e RPC_TIMEOUT=2s` to `docker run`; changing the services' environment does not configure that separate publisher.
 
-Record `git rev-parse HEAD` alongside the image used for a demonstration. The mutable-cache fix is on `Sprint-2` from commit `dca4a65`; `main` at `3611512` predates it. Pull `Sprint-2`, rebuild the image, and recreate all demo nodes before retesting. Rebuilding the image alone does not replace running containers. A fresh network loses its in-memory package data, so start all nodes before publishing the demo versions again.
+Record `git rev-parse HEAD` alongside the image used for a demonstration. Kim verified the rebuilt `e98c92d` image, which includes the mutable-cache fix from `dca4a65`, and fast-forwarded `main` to the same code as `Sprint-2`. The older `3611512` build both caches mutable reads and ignores `RPC_TIMEOUT`. Pull the latest branch, rebuild the image, and recreate all demo nodes before retesting. Rebuilding the image alone does not replace running containers. A fresh network loses its in-memory package data, so start all nodes before publishing the demo versions again.
 
 For 50 nodes total:
 
@@ -329,7 +329,7 @@ latest -> record v3 -> record v2 -> record v1
 
 Versions have a total order: numeric `MAJOR.MINOR.PATCH`, with no leading zeros. Nodes reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it fetches and validates the missing v2 link before advancing. Ed25519 signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. A node with no accepted pointer checks the supplied history back to its start but cannot detect an alternative history it has never seen.
 
-The tests exercise valid publication and installation, wrong-owner/signature rejection, forks, rollback, missing-history catch-up, both `--force` and `--prev`, and decoded inspection commands. The final 50-container demonstration and registry report material still need to be completed before the report is uploaded to Canvas and the review takes place.
+The tests exercise valid publication and installation, wrong-owner/signature rejection, forks, rollback, missing-history catch-up, both `--force` and `--prev`, and decoded inspection commands. Kim's rebuilt 50-container run confirmed updated latest installs for two different readers and rollback, fork, and wrong-owner rejection by all ten replicas; see the [reported results](../REPORT.md#verification). The remaining work is to finalize the registry report material, rehearse the demonstration and explanations, and upload the report to Canvas before the review.
 
 ## Assessment preparation: understand the whole lab
 

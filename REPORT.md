@@ -48,11 +48,12 @@ We are implementing the Kademlia DHT as specified in the course's `LAB-SPEC.md`,
 - Registry and CLI integration, signed records/pointers, domain ownership, and fork/rollback rejection
 - A 1000-node registry test, including repeated latest installs and publication from non-replicas
 - Shared fake-DNS owners file in the container configuration; private keys remain per container
+- Integrated 50-container rerun on `e98c92d`: updated latest installs, invalid-update rejection by all ten replicas, and timeout comparison (reported by Kim)
 - Thread-safety discussion below
 
 **Remaining work:**
 - Final report additions describing the registry's encoding, signatures, ownership, history rules, and limitations
-- Final 50-container demonstration of the integrated build, and report upload to Canvas before the last review; every member must be able to demonstrate and explain all requirements
+- Demo rehearsal and report upload to Canvas before the last review; every member must be able to demonstrate and explain all requirements
 
 ## Thread safety
 
@@ -86,11 +87,24 @@ One replication goroutine and one refresh goroutine each run passes sequentially
 
 ### Verification
 
-The follow-up for the container timeout report passed the full race/coverage suite, including both 1000-node tests, with **93.3% combined statement coverage**. `go vet ./...` and a node build passed. `docker stack config` confirmed that the default 500 ms deadline and an explicit `RPC_TIMEOUT=2s` are passed to both services. Real UDP tests cover deadline configuration, delayed validation, late STORE completion, and acknowledgement with a longer deadline. These tests establish the timeout mechanism but do not identify the cause of Kim's individual timeout or replace the outstanding 50-container rerun on the fixed image.
+After confirming that both remote branches pointed to `e98c92d`, a final local `go test -race ./...` passed across all six packages, including both 1000-node tests. `go vet ./...` and the node build also passed.
+
+Kim reported rebuilding the image from `e98c92d`, recreating all 50 containers, and repeating the registry scenarios. Two different readers installed the new latest version after publication: 1.1.0 to 1.2.0, then 1.2.0 to 1.3.0. Rollback, fork, and wrong-owner attempts were refused by all ten replicas. The earlier stale-cache reproduction used the content of `3611512`, before the cache fix in `dca4a65`; it was not a failure of the fixed build.
+
+The timeout comparison below also used the rebuilt `e98c92d` image, which reads `RPC_TIMEOUT`. Kim withdrew his earlier apparent 2 s result because that older image ignored the setting.
+
+| Per-attempt RPC timeout | Consecutive publications | Publications reporting a timeout |
+| --- | --- | --- |
+| 500 ms | 8 | 2 |
+| 2 s | 8 | 0 |
+
+A fresh reader saw a complete 20-version history including both publications that reported a timeout. This confirms that a publication error does not imply that its update is absent; it does not establish the state of every replica. The small comparison supports using 2 s for the demonstration, not a general claim of zero timeout probability. History-fetch latency remains a plausible explanation for the delayed acknowledgements, without a timing trace establishing the cause of those individual timeouts. These container results are Kim's reported observations; the local tests described below are separate evidence.
+
+The follow-up for the container timeout report passed the full race/coverage suite, including both 1000-node tests, with **93.3% combined statement coverage**. `go vet ./...` and a node build passed. `docker stack config` confirmed that the default 500 ms deadline and an explicit `RPC_TIMEOUT=2s` are passed to both services. Real UDP tests cover deadline configuration, delayed validation, late STORE completion, and acknowledgement with a longer deadline. These tests establish the timeout mechanism but do not identify the cause of Kim's individual timeouts.
 
 After merging the registry and shared-volume configuration, the mutable read-cache fix passed the full race/coverage suite with **93.2% combined statement coverage**, including both 1000-node tests. `go vet ./...` and a node build also passed. The registry regression now requires a non-replica to install the newer release after another publication and then publish a valid successor. Core tests require that a read-only pointer is neither served through FIND_VALUE nor periodically republished.
 
-A separate real UDP check ran 12 node processes with k=10, choosing both publisher and reader outside the ten closest pointer replicas. The reader installed 1.0.0, then 1.1.0 after publication, while retaining only immutable records and blobs. Forced rollback, forced fork, and wrong-owner publication were rejected by the ten replicas, and latest still installed 1.1.0. All temporary processes were stopped. This local-process check does not substitute for the final 50-container demonstration; Docker was not running on the test machine.
+A separate real UDP check ran 12 node processes with k=10, choosing both publisher and reader outside the ten closest pointer replicas. The reader installed 1.0.0, then 1.1.0 after publication, while retaining only immutable records and blobs. Forced rollback, forced fork, and wrong-owner publication were rejected by the ten replicas, and latest still installed 1.1.0. All temporary processes were stopped. This was a local-process check; Docker was not running on the test machine. Kim's subsequent 50-container rerun is recorded above.
 
 On October 11, the integrated simulator, experiments, and mutable-value core passed `go test -race -coverpkg=./... -coverprofile=coverage.out ./...`, `go vet ./...`, and a node build with Go 1.26.3. Combined statement coverage was **90.9%**, exceeding the required 80%. The full suite included the 1000-node test, concurrent pointer validation, rejected-update preservation, and successful and failed missing-history fetches over real loopback UDP. This is the pre-registry baseline; repeat these checks after the registry and CLI are integrated.
 
@@ -98,7 +112,7 @@ On October 9, `go test -race -coverpkg=./... -coverprofile=coverage.out ./...`, 
 
 A three-node end-to-end check was also run using local processes and then Docker containers. Node A stored a file; B joined through the bootstrap address and fetched the bytes from A. Node C joined later and received the value through B's periodic replication without issuing a GET. After both A and B exited, C still returned the same bytes from its local replica. The Docker image builds with Go 1.22. The updated Swarm configuration was validated, but this Sprint 2 check did not deploy a 50-node Swarm.
 
-The October 11 audit could not repeat container checks because the local Docker daemon was stopped. The earlier container observations above are historical results, not a new verification of the pending final registry build.
+The October 11 local audit could not repeat container checks because the local Docker daemon was stopped. Its earlier container observations are historical results, separate from Kim's subsequent rerun of the integrated registry build.
 
 ## Experimental evaluation
 
@@ -133,7 +147,7 @@ The results use independent packet loss after healthy setup, no churn during the
 - Idle refresh can perform up to 256 lookups in a scan; scans are sequential and an unresponsive network can delay the next pass or shutdown until the current lookup finishes.
 - Mutable read caching is disabled, but an actual STORE replica that misses a publication can still serve an old accepted pointer. The fix is not a globally freshest-head guarantee. Replication is per destination and can partially succeed; a multi-node publication is not a transaction.
 - A non-replica reader does not retain a mutable history checkpoint between reads. Nodes without an accepted pointer verify the complete supplied chain but cannot detect a prior fork that they never learned. Nodes with stored history reject updates that do not extend it. There is no global consensus mechanism to reconcile two independently accepted histories.
-- `LookupData` can return `ErrValueNotFound` after exhausted or unresponsive peers, so callers cannot always distinguish absence from network failure. A long history catch-up runs inside the UDP STORE handler and may exceed the sender's deadline. A larger `RPC_TIMEOUT` can mitigate this at the cost of longer waits for unreachable peers; it does not bound arbitrary history traversal or make publication atomic. Kim reported one timed-out replica across six publications in a 50-container run, with the other replicas accepting the update; history fetch latency is a hypothesis for that specific occurrence, not a verified cause. The exact image commit and a repeat of the 50-container scenario on the cache fix must be recorded before closing that demonstration.
+- `LookupData` can return `ErrValueNotFound` after exhausted or unresponsive peers, so callers cannot always distinguish absence from network failure. A long history catch-up runs inside the UDP STORE handler and may exceed the sender's deadline. A larger `RPC_TIMEOUT` can mitigate this at the cost of longer waits for unreachable peers; it does not bound arbitrary history traversal or make publication atomic. In Kim's rebuilt 50-container run, two of eight publications reported a timeout at 500 ms and zero of eight did at 2 s. Both timed-out publications appeared in the history subsequently read by a fresh node. This demonstrates an uncertain outcome at the publisher; it does not prove that every replica eventually accepted the write or establish the exact cause of the delay.
 
 Run instructions and an explanation of the data flow are in [labs/RUNNING.md](labs/RUNNING.md).
 
