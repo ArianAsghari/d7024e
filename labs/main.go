@@ -115,6 +115,7 @@ func runNode(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 	network.AttachKademlia(node)
+	installRegistry(node)
 	if err := network.Listen(ip, port); err != nil {
 		return err
 	}
@@ -299,9 +300,15 @@ func dispatchCommand(out io.Writer, routingTable *kademlia.RoutingTable, node *k
 			fmt.Fprintln(out, "(found locally)")
 		}
 
+	case "publish", "install", "keygen":
+		registryCommand(out, node, cmd, args)
+
 	case "show":
+		if registryShow(out, node, args) {
+			return true
+		}
 		if len(args) != 1 {
-			fmt.Fprintln(out, "usage: show rt|ds")
+			fmt.Fprintln(out, showUsage)
 			return true
 		}
 		switch args[0] {
@@ -310,7 +317,7 @@ func dispatchCommand(out io.Writer, routingTable *kademlia.RoutingTable, node *k
 		case "ds":
 			fmt.Fprint(out, formatDataStore(node.Entries()))
 		default:
-			fmt.Fprintln(out, "usage: show rt|ds")
+			fmt.Fprintln(out, showUsage)
 		}
 
 	default:
@@ -345,7 +352,7 @@ func formatDataStore(entries []kademlia.DataEntry) string {
 	}
 	var b strings.Builder
 	for _, entry := range entries {
-		fmt.Fprintf(&b, "%s (%d bytes)\n", truncateID(entry.Key), len(entry.Value))
+		fmt.Fprintf(&b, "%s (%d bytes)%s\n", truncateID(entry.Key), len(entry.Value), describeEntry(entry))
 	}
 	return b.String()
 }
