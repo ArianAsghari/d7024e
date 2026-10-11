@@ -196,7 +196,7 @@ func TestValueValidatorRechecksConcurrentUpdates(t *testing.T) {
 	}
 }
 
-func TestLookupDataValidatesMutableRepliesBeforeCaching(t *testing.T) {
+func TestLookupDataValidatesMutableRepliesWithoutCaching(t *testing.T) {
 	for _, validPeer := range []bool{false, true} {
 		t.Run(map[bool]string{false: "all rejected", true: "continue to valid peer"}[validPeer], func(t *testing.T) {
 			key := hashData([]byte("mutable key"))
@@ -235,10 +235,44 @@ func TestLookupDataValidatesMutableRepliesBeforeCaching(t *testing.T) {
 				t.Fatalf("mutable lookup = %q, %v, %v", got, source, err)
 			}
 			got, source, err = node.LookupData(key.String())
-			if err != nil || string(got) != "accepted" || source != nil || len(rpc.dataCalls) != 2 {
-				t.Fatalf("cached mutable lookup = %q, %v, %v", got, source, err)
+			if err != nil || string(got) != "accepted" || source == nil || len(rpc.dataCalls) != 4 {
+				t.Fatalf("repeat mutable lookup = %q, %v, %v", got, source, err)
+			}
+			if len(node.Entries()) != 0 {
+				t.Fatal("mutable lookup created a read cache")
 			}
 		})
+	}
+}
+
+func TestMutableReadIsNotServedOrRepublishedAsAReplica(t *testing.T) {
+	_, reader, replica := simPair(t, SimConfig{})
+	key := hashData([]byte("example.com:package:latest"))
+	validate := func(*KademliaID, []byte, []byte) error { return nil }
+	reader.SetValueValidator(validate)
+	replica.SetValueValidator(validate)
+	reader.routingTable.AddContact(*contactB())
+	if err := replica.StoreValue(key, []byte("first pointer")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := reader.LookupData(key.String()); err != nil || string(got) != "first pointer" {
+		t.Fatalf("initial read = %q, %v", got, err)
+	}
+	// FIND_VALUE on the reader must refer other clients onward, not return
+	// the old pointer. Republish must also leave that pointer on its replica.
+	readerContact := reader.routingTable.Me()
+	result, err := replica.network.SendFindDataMessage(&readerContact, key)
+	if err != nil || result.Found || len(result.Contacts) == 0 {
+		t.Fatalf("reader FIND_VALUE = %+v, %v", result, err)
+	}
+	if err := reader.Republish(); err != nil || len(reader.Entries()) != 0 {
+		t.Fatalf("reader replication retained a pointer: %v", err)
+	}
+	if err := replica.StoreValue(key, []byte("second pointer")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := reader.LookupData(key.String()); err != nil || string(got) != "second pointer" {
+		t.Fatalf("updated read = %q, %v", got, err)
 	}
 }
 

@@ -18,11 +18,8 @@ import (
 // refuse, a replica that missed updates and catches up, and installs from nodes
 // that know nothing about the package.
 //
-// Publishers and attackers are chosen among the nodes nearest to the pointer
-// key. A node farther away that publishes or installs keeps a cached copy of
-// the pointer which a later update does not reach, and FIND_VALUE serves that
-// stale copy to other nodes; avoiding such nodes keeps the expected outcome of
-// every step exact.
+// Publications and repeated installs also run on non-replicas, proving reads
+// and publication do not create pointer copies that later updates would miss.
 func TestThousandNodeRegistry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("1000-node test skipped in -short mode")
@@ -40,10 +37,10 @@ func TestThousandNodeRegistry(t *testing.T) {
 	publish := func(from int, version string) registry.PublishResult {
 		t.Helper()
 		res := r.publish(from, version)
-		want := storedValue(r.net.Nodes[from], r.key())
+		want := r.legitPointer()
 		accepted = append(accepted, want)
 		if pointerVersion(t, want) != version {
-			t.Fatalf("publisher %d holds %s after publishing %s", from, pointerVersion(t, want), version)
+			t.Fatalf("network holds %s after publishing %s", pointerVersion(t, want), version)
 		}
 		for _, i := range replicas {
 			if got := storedValue(r.net.Nodes[i], r.key()); !bytes.Equal(got, want) {
@@ -53,7 +50,21 @@ func TestThousandNodeRegistry(t *testing.T) {
 		return res
 	}
 	first := publish(ranked[3], "1.0.0")
-	publish(ranked[6], "1.1.0")
+	reader := ranked[n-1]
+	for _, version := range []string{"1.0.0", "1.1.0"} {
+		if version == "1.1.0" {
+			publish(ranked[n-2], version)
+		}
+		got, err := r.client(reader).Install(testDomain, testPkg, registry.Latest)
+		if err != nil || got.Version.String() != version {
+			t.Fatalf("non-replica repeat install: want %s, got %v, %v", version, got, err)
+		}
+		for _, i := range []int{reader, ranked[n-2]} {
+			if storedValue(r.net.Nodes[i], r.key()) != nil {
+				t.Fatalf("non-replica %d retained a mutable pointer", i)
+			}
+		}
+	}
 	publish(ranked[8], "2.0.0")
 	v3 := r.legitPointer()
 

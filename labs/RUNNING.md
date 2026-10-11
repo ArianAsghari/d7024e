@@ -2,7 +2,7 @@
 
 ## What we are building
 
-The assignment is a decentralized package repository: package files live on multiple computers instead of one central server. Part 1 implements the distributed storage underneath it. Part 2 will add package names, owners, signatures, and version history.
+The assignment is a decentralized package repository: package files live on multiple computers instead of one central server. Part 1 implements the distributed storage underneath it. Part 2 adds package names, owners, signatures, and version history. Both parts are now integrated.
 
 One running copy of the Go program is one **node**. A node has:
 
@@ -11,7 +11,7 @@ One running copy of the Go program is one **node**. A node has:
 - A **data store**, which holds some file contents in memory.
 - A UDP listener, an interactive CLI or headless loop, and replication and bucket-refresh workers.
 
-A file's **key** is `SHA-256(file contents)`. The same bytes always have the same key. When receiving bytes for a key, nodes check that the hash matches. This detects incorrect content; Part 2 adds proof of who published it.
+A file's **key** is `SHA-256(file contents)`. The same bytes always have the same key. When receiving bytes for a key, nodes check that the hash matches. This detects incorrect content; Part 2 adds proof of who published it through signed records. The mutable latest pointer uses a name-derived key and passes registry validation instead.
 
 Kademlia decides where to store a key using `distance = nodeID XOR key`, interpreted as a number. Smaller numbers are closer. This is distance between identifiers, unrelated to physical location. A lookup asks known peers for contacts closer to the target, then asks those contacts, continuing until it has queried the closest candidates it has found. The initiating node controls the iteration.
 
@@ -56,7 +56,8 @@ The initial core PR, [PR #1](https://github.com/ArianAsghari/d7024e/pull/1), was
 | Report thread-safety section | Written in `../REPORT.md` |
 | Mutable-pointer core hook | Implemented: `ValueValidator`, `SetValueValidator`, `StoreAt`, and key-preserving replication |
 | Simulated network, 1000-node test, and experiments | Integrated from the team's Sprint-2 work; see `experiment/` and `experiments/results/` |
-| Signed version records, ownership, no forks/rollback, and registry CLI | Kim's remaining registry integration; the validator can fetch missing records through `LookupData` |
+| Signed version records, ownership, no forks/rollback, and registry CLI | Integrated; validation fetches missing records through `LookupData` |
+| Mutable-pointer read-cache bug | Fixed: reads validate without retaining pointers, and non-replica publishers keep no extra copy |
 
 Joining works as follows:
 
@@ -161,6 +162,8 @@ Stopping and restarting all nodes loses their in-memory stores. Disk persistence
 | `REFRESH_INTERVAL` | `1h` | Scan interval and idle threshold for bucket refresh; must be positive. |
 | `ALPHA` | `3` | Maximum concurrent probes per lookup round; positive integer. |
 | `HEADLESS` | Empty | Set to `1` to run without a CLI until SIGINT/SIGTERM. Used for service containers. |
+| `OWNERS_FILE` | `owners.json` | Fake-DNS JSON table mapping domain names to public keys; share it between nodes. |
+| `KEYS_DIR` | `keys` | Directory containing this publisher's private keys; keep separate per node. |
 
 Hostnames are resolved before the bootstrap ID is hashed. A service name must resolve to the actual node address, which is why the Docker bootstrap uses DNS round-robin instead of a virtual service IP. `k` is adjustable through `NewRoutingTable(me, k)`; runtime flags for it are not implemented.
 
@@ -259,10 +262,12 @@ To open an additional interactive node on that network and make the files in `la
 ```sh
 docker run --rm -it --network kademlia_kademlia_network \
   -e BOOTSTRAP=bootstrap:8000 \
+  -e OWNERS_FILE=/shared/owners.json -e KEYS_DIR=/keys \
+  -v kademlia_registry_shared:/shared \
   -v "$PWD:/files:ro" kadlab:latest
 ```
 
-You can then run `put /files/README.md`. With no shared volume, filenames refer to files **inside the container**, not your Mac.
+You can then run `put /files/README.md`, or create a domain with `keygen example.com` and publish a small file. The `registry_shared` volume is shared on this single Docker host; it is not a cross-host shared filesystem. Private keys stay inside the interactive container unless you explicitly mount a separate keys directory. With no file mount, filenames refer to files **inside the container**, not your Mac.
 
 To remove this project's services:
 
@@ -294,18 +299,20 @@ The `total:` line from `go tool cover` is the combined statement coverage. The i
 | `kademlia/network.go` | UDP serialization, RPC correlation/timeouts/retries, and request handlers |
 | `kademlia/simnetwork.go` | Simulated RPC transport with seeded latency, loss, retries, and node removal |
 | `experiment/`, `cmd/experiments/`, `scripts/analyze.py` | Network generation, measurements, 1000-node test, experiment CLI, and external analysis |
+| `registry/client.go`, `registry/validate.go`, `registry/records.go` | Publishing/installing, history rules, canonical records, and signatures |
+| `registry/dht/`, `registry_cli.go` | Storage adapter, validator installation, fake DNS/key files, and commands |
 | `LAB-SPEC.md` | Required behavior and grading requirements |
-| `PART2-DESIGN.md` | Future package registry and version-history design |
+| `PART2-DESIGN.md` | Package registry and version-history design |
 
 The rest of the repository contains course lectures and tutorials; the runnable project is under `labs/`.
 
 ## Part 2 integration handoff
 
-The core is ready for Kim's registry package. Before serving RPCs, register the registry callback with `node.SetValueValidator(validator)`, using the signature `func(key *KademliaID, current, incoming []byte) error`. Return nil only after validating the key, ownership, signature, and history. When records are missing, fetch and verify them by hash through this node's `LookupData` inside the callback. An error rejects the pointer update. The callback runs outside core locks and must handle concurrent calls, revalidation after competing writes, and identical updates from retries or replication.
+The registry is wired into startup through `installRegistry`, which calls `registry/dht.Install` before serving RPCs. It registers the callback with `node.SetValueValidator(validator)`, using the signature `func(key *KademliaID, current, incoming []byte) error`. The callback returns nil only after validating the key, ownership, signature, and history. When records are missing, it fetches and verifies them by hash through this node's `LookupData`. An error rejects the pointer update. The callback runs outside core locks and handles concurrent calls, revalidation after competing writes, and identical updates from retries or replication.
 
-Publish immutable blobs and version records with `Store`; publish the signed pointer at its namespace key with `StoreAt`. Each destination validates independently. `StoreAt` does not prevalidate remote updates, allowing `publish --force` to send attempts that receivers must reject. `FIND_VALUE` returns the last accepted value, and replication preserves its original key. `LookupData` uses a local accepted value when present; it does not poll for a newer global head. The registry and CLI are not wired into `main.go` yet.
+Publish immutable blobs and version records with `Store`; publish the signed pointer at its namespace key with `StoreAt`. Each destination validates independently. `StoreAt` does not prevalidate remote updates, allowing `publish --force` to send attempts that receivers must reject. `FIND_VALUE` returns the last accepted value, and replication preserves its original key. Lookup results are validated, but only immutable values are cached. A reader outside the replicas therefore looks up the pointer again on its next install. Explicit STORE replicas can still return their local pointer without polling: a replica that missed an update may be behind.
 
-A package name such as `example.org:calculator` will have a signed latest pointer pointing to a signed version record. Each version record links to its package blob and to the previous version record:
+A package name such as `example.org:calculator` has a signed latest pointer pointing to a signed version record. Each version record links to its package blob and to the previous version record:
 
 ```text
 latest -> record v3 -> record v2 -> record v1
@@ -313,6 +320,152 @@ latest -> record v3 -> record v2 -> record v1
            blob v3      blob v2      blob v1
 ```
 
-Versions must have a total order: any two can be compared consistently. Nodes must reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it must fetch and validate the missing v2 link before advancing. Signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. Those registry policies remain Kim's work; the core hook supports their enforcement.
+Versions have a total order: numeric `MAJOR.MINOR.PATCH`, with no leading zeros. Nodes reject rollback to an older version and reject a different history that does not extend the one they accepted. If a node knows v1 and receives a valid v3 update, it fetches and validates the missing v2 link before advancing. Ed25519 signatures tie publications to the domain owner's key. The latest pointer is the controlled exception to ordinary immutable, content-addressed storage. A node with no accepted pointer checks the supplied history back to its start but cannot detect an alternative history it has never seen.
 
-After integration, exercise valid publication and installation, wrong-owner/signature rejection, forks, rollback, missing-history catch-up, and both `--force` and `--prev`. Check `show DOMAIN:PACKAGE`, `show dns DOMAIN`, and decoded `show ds`. Rerun the race/coverage suite with at least 80% combined statement coverage, prepare the 50-container demonstration, finish the report's registry sections, and upload the final report to Canvas before the review.
+The tests exercise valid publication and installation, wrong-owner/signature rejection, forks, rollback, missing-history catch-up, both `--force` and `--prev`, and decoded inspection commands. The final 50-container demonstration and registry report material still need to be completed before the report is uploaded to Canvas and the review takes place.
+
+## Assessment preparation: understand the whole lab
+
+Read this section in order, then explain each step without looking at the text. The goal is to trace one publication from a file to another person's machine, including what happens when nodes fail or someone sends an invalid update.
+
+### 1. What the system promises
+
+The system is a small decentralized package registry. Part 1 answers “where are the bytes, and do they match the requested hash?” Part 2 answers “which package and version do these bytes represent, did the domain owner authorize them, and does the update extend the history this node knows?” A node can be a publisher, a reader, and a storage replica at the same time. These are roles for a particular operation, not three different server programs.
+
+A **hash** is a deterministic fingerprint of bytes. SHA-256 produces 256 bits, displayed as 64 hexadecimal digits. It does not encrypt the bytes and does not establish who created them. A **signature** is produced with a private key and checked with a public key; it establishes authorization only when we also trust the mapping from the domain to that public key.
+
+### 2. How Part 1 finds storage
+
+Both nodes and stored objects have IDs in the same 256-bit space. A node's ID is SHA-256 of its advertised `IP:port`; an immutable object's key is SHA-256 of its bytes. The distance between two IDs is their bitwise XOR, interpreted as an unsigned integer. Physical distance and IP-address order play no part.
+
+For a four-bit teaching example, let the target be `1010`. Node `1000` has distance `0010` (2), node `0010` has distance `1000` (8), and node `1011` has distance `0001` (1). Node `1011` is closest. The actual implementation performs the same operation over 256 bits.
+
+Each node keeps 256 buckets grouped by the position of the first differing bit. Bucket 0 is the farthest range; bucket 255 is the nearest. Each bucket holds up to k contacts, default 10. A contact consists of a node ID and address, not a package. The local data store is a separate map from object key to bytes. `show rt` displays contacts; `show ds` displays stored objects.
+
+When a bucket fills, the node PINGs its least recently seen contact. A responsive contact stays; an unresponsive one can be replaced. Keeping responsive established contacts avoids discarding a working route just because a new node appeared. A contact heard from during the PING cannot be evicted by that old timeout.
+
+### 3. How lookup, joining, and replication work
+
+The four RPCs are PING, FIND_NODE, FIND_VALUE, and STORE. FIND_NODE returns nearby contacts. FIND_VALUE returns a stored value or nearby contacts. STORE asks the receiver to validate and retain bytes. The sender controls a lookup: it starts with known contacts, sends up to alpha requests concurrently (default 3), collects the batch, incorporates new referrals, and continues with the closest unqueried candidates. The receiver does not recursively perform that lookup for the sender. The lookup stops when its k closest remaining candidates are exhausted, or when a value lookup accepts a response.
+
+`k` and `alpha` are different: k controls bucket capacity and the desired number of replicas; alpha controls simultaneous lookup probes. With fewer than k nodes, there can be fewer than k replicas. More alpha can reduce sequential waiting while sending more messages. The current implementation waits for the whole batch, including slow requests, before moving on.
+
+Joining first PINGs a bootstrap node, then looks up the joining node's own ID to find its neighborhood, then refreshes farther bucket ranges. The bootstrap supplies an entry point; it does not become a central index. Periodic bucket refresh discovers contacts in idle ranges. Periodic replication republishes stored values to the current closest nodes so replicas can recover after churn. These are different maintenance jobs. Values have no expiration, and replication cannot recover data once every copy is lost.
+
+The real RPC transport uses UDP with JSON, unpredictable 128-bit request IDs, response matching, a 500 ms default timeout, and two retries. UDP can lose requests or replies. If a reply is lost, the receiver may already have stored the value; repeating an identical accepted update must therefore be harmless. The `RPCClient` interface lets the same core run through the simulated transport. The simulator can drop either request or response legs, change retry count, and remove nodes.
+
+### 4. The three objects in a publication
+
+| Object | Key | Contents and purpose |
+| --- | --- | --- |
+| Package blob | SHA-256(file bytes) | The downloadable file; immutable |
+| Version record | SHA-256(encoded signed record) | Domain, package, numeric version, blob hash, previous-record hash, and signature; immutable |
+| Latest pointer | SHA-256(`domain:package:latest`) | Domain, package, version, record hash, and signature; mutable |
+
+Changing a blob changes its hash. Changing a version record changes its hash. The pointer key must stay constant, because someone who knows only `example.com:tool` needs a stable starting point to find the newest known record. The pointer's value can change to reference a newer record without overwriting old records or files.
+
+The registry uses canonical JSON and Ed25519 signatures over SHA-256 of the unsigned canonical record. The signed tag distinguishes a version record from a latest pointer; signed domain and package names bind it to the namespace. Strict decoding prevents multiple encodings of what is supposed to be the same record. Versions are three decimal integers, so `1.2.10` is newer than `1.2.9`; they are not compared as plain strings.
+
+The fake DNS is the shared `owners.json`: domain → base64 public key. `keygen` saves the private key in that node's `KEYS_DIR` and adds the public key to the owners file. Other nodes need the public key to verify; they do not need the publisher's private key. Sharing the fake-DNS file is the demo's trust assumption. This is not a decentralized solution to ownership itself: the lab explicitly allows DNS to supply that external authority.
+
+### 5. Follow a publish and an install
+
+For `publish example.com:tool:1.1.0 file.txt`, the registry reads the current pointer, chooses the previous record, hashes the file, signs a new version record, and signs a new latest pointer. Without `--force`, it validates the proposed transition before uploading. It then stores the blob, stores the version record, and finally calls `StoreAt` for the stable pointer key. The last step happens after records are available so receiving replicas can fetch and validate them. A failure can leave immutable uploads behind; the multi-node operation is not an atomic transaction.
+
+For `install example.com:tool:latest output.txt`, the registry obtains the pointer, checks its identity and signature, follows its record hash, verifies the record, fetches the blob, and verifies the blob hash before saving it. Installing a named older version walks the previous-record chain until that version is found. `show example.com:tool` walks the chain for display rather than downloading a package. `show dns example.com` displays the ownership key used for verification.
+
+The core can store any hash-matching blob, including bytes that are not a valid version record. It does not interpret every immutable object as registry metadata. Authenticity is checked when a record is used to validate a pointer or install a package. A correct content hash alone never proves ownership.
+
+### 6. Why invalid updates are rejected
+
+Assume a replica currently knows `1.1.0 → 1.0.0`. A signed `1.0.1` pointer is a rollback because its version is lower than 1.1.0. A signed 1.2.0 record pointing directly to 1.0.0 is a fork because it skips the accepted 1.1.0 record. A different record for the same version is also a fork. A legitimate 1.2.0 must lead back to the exact accepted record hash; a larger version number by itself is insufficient. Wrong-owner or altered signatures fail before history can authorize the update.
+
+If a replica knows 1.0.0 and receives 1.2.0, the validator fetches the 1.2.0 and 1.1.0 records by hash, verifies their signatures and identities, and follows them back to its accepted 1.0.0. Missing or invalid history causes rejection; the old pointer stays. Strictly decreasing versions while walking backwards exclude cycles. The default 1000-record traversal limit bounds work.
+
+`--force` skips the publishing client's policy precheck, allowing a demonstration of what receivers reject. It does not disable receiver validation. `--prev=1.0.0` deliberately chooses an older predecessor, which can create a fork attempt. These flags test enforcement at the replicas, where an untrusted publisher cannot turn it off.
+
+### 7. Understand the cache fix and its boundary
+
+With 40 nodes and k=10, only ten nodes receive a pointer publication. Previously a different node B could read and cache v1. Later A published v2 to the ten replicas, but B returned its old local pointer forever. B could also return that old pointer to others through FIND_VALUE. A signature proves that v1 was authorized, not that it is still latest.
+
+Now reads validate pointers without storing them, and the registry does not force a pointer copy on a non-replica publisher. Only STORE creates a stored mutable replica. B asks the network again on its next read; its immutable version records and package blobs can still be cached safely. We do not guess replica membership from an incomplete local routing table. The tradeoff is more pointer lookups and no retained history checkpoint on a non-replica reader.
+
+This is not global consensus or a guarantee of instantaneous freshness. An actual replica that missed an update can still be behind. A node with no accepted pointer cannot detect a previously unseen competing valid history. Lookups cannot always distinguish unreachable data from absent data. Long catch-up inside STORE may outlast an RPC timeout. Explain these boundaries honestly during assessment.
+
+### 8. Concurrency and experimental evidence
+
+Each bucket has a lock; the data map has an RWMutex; lookup candidates belong to one coordinator; RPC workers report through channels. Validators run outside the data lock because their lookups must be able to read and write the same store. After validation, the core checks whether the current value changed and repeats validation if necessary. Otherwise two competing updates could both validate against v1 and overwrite each other. Copying byte slices prevents a caller from changing stored bytes without going through validation.
+
+The tests include 1000-node storage and registry networks. Those check behavior at scale; they are different from the experiments that measure performance. The scalability experiment plots logical probes against N and finds approximately logarithmic growth over the measured range. The reliability experiment increases independent packet loss and compares alpha/retry configurations. Multiple seeds, means, and standard deviations show variation instead of one lucky run. Setup events and local cache hits are kept out of the measured lookups. Probe counts exclude retransmissions, and simulated rounds are a latency proxy rather than measured milliseconds. Read the plots and limitations in the report before discussing conclusions.
+
+`go test -race` checks executed paths for data races; it cannot prove every possible interleaving safe. Coverage measures which statements tests exercised, not whether all important behaviors are correct. The lab requires at least 80% combined coverage, so read the `total:` line from `go tool cover`, not each package's percentage under `-coverpkg=./...`.
+
+### 9. A hands-on registry rehearsal
+
+From `labs/`, prepare files and a binary in a fresh demo directory:
+
+```sh
+mkdir -p /tmp/kademlia-learning
+printf 'first release\n' > /tmp/kademlia-learning/v1.txt
+printf 'second release\n' > /tmp/kademlia-learning/v2.txt
+go build -o /tmp/kademlia-learning/node .
+```
+
+In terminal A:
+
+```sh
+BIND_IP=127.0.0.1 PORT=8001 \
+  OWNERS_FILE=/tmp/kademlia-learning/owners.json \
+  KEYS_DIR=/tmp/kademlia-learning/keys-a \
+  /tmp/kademlia-learning/node
+```
+
+In terminal B:
+
+```sh
+BIND_IP=127.0.0.1 PORT=8002 BOOTSTRAP=127.0.0.1:8001 \
+  OWNERS_FILE=/tmp/kademlia-learning/owners.json \
+  KEYS_DIR=/tmp/kademlia-learning/keys-b \
+  /tmp/kademlia-learning/node
+```
+
+Both nodes must be running before publication. In A's node prompt:
+
+```text
+keygen example.com
+show dns example.com
+publish example.com:tool:1.0.0 /tmp/kademlia-learning/v1.txt
+```
+
+In B's node prompt:
+
+```text
+install example.com:tool:latest /tmp/kademlia-learning/installed.txt
+show example.com:tool
+show ds
+```
+
+Then publish 1.1.0 from A and repeat B's install. A can demonstrate receiver rejection with:
+
+```text
+publish example.com:tool:1.1.0 /tmp/kademlia-learning/v2.txt
+publish --force example.com:tool:1.0.1 /tmp/kademlia-learning/v1.txt
+publish --force --prev=1.0.0 example.com:tool:1.2.0 /tmp/kademlia-learning/v2.txt
+```
+
+The first command succeeds, the second is a rollback, and the third is a fork. `show example.com:tool` must still show 1.1.0 as the head. Read the installed file in an ordinary shell with `cat /tmp/kademlia-learning/installed.txt`. Type `exit` in both node prompts when finished. If repeating this rehearsal with the same directory, reuse its existing key and choose new versions, or use a new directory. With two nodes both are replicas, so this rehearsal explains the workflow but does not reproduce the more-than-k cache bug; the 40-node and 1000-node regression tests cover that case.
+
+### 10. Questions to answer aloud
+
+1. What does a hash prove, and what does it not prove? Explain why both a signature and a trusted public-key source are needed.
+2. Compute XOR distances in the four-bit example. Explain the difference between a routing table and a data store.
+3. Explain k versus alpha, why a lookup is iterative, and why increasing alpha need not reduce total probes.
+4. Trace a join, then explain the separate purposes of bucket refresh and value replication.
+5. Draw the three publication objects and their keys. Explain why only the latest pointer changes in place.
+6. Starting from 1.1.0, give one valid update, one rollback, and one fork. Explain why `--force` cannot make replicas accept them.
+7. Trace catch-up from 1.0.0 to 1.2.0. Explain what happens if the middle record is unavailable.
+8. Explain the stale-pointer bug, why it hides with at most k nodes, and exactly what the fix does and does not guarantee.
+9. Explain the deadlock risk if a validator holds the data lock while doing LookupData, and the concurrent-update risk if it never rechecks its snapshot.
+10. Explain the axes, seeds, averages, variation, and retry policy in each experiment. Identify which limitations the measurements do not cover.
+
+For a code walkthrough, follow `main.go` → `registry_cli.go` → `registry/client.go` → `registry/dht/backend.go` → `kademlia/kademlia.go`. Follow an incoming pointer through `StoreValue` → `acceptValue` → `registry/dht/validator.go` → `registry/validate.go`. Be ready to explain the entire path even if a teammate wrote part of it.

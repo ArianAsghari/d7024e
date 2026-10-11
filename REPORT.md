@@ -17,17 +17,17 @@ We are implementing the Kademlia DHT as specified in the course's `LAB-SPEC.md`,
 - **Node identity**: each node's ID is derived as `SHA-256(IP:port)`, computed at startup from the container's own network address.
 - **Routing table**: a fixed array of 256 k-buckets. Each bucket holds up to *k* contacts (default 10, configurable). Existing contacts move to the most-recently-seen end. A full bucket PINGs its least-recently-seen contact, retaining it if responsive and replacing it if unresponsive.
 - **Core algorithm** (`kademlia.go`, `lookup.go`): implements iterative node and value lookups in rounds of up to alpha concurrent probes (default 3; adjustable through `ALPHA` or `SetAlpha`). Each peer is queried at most once; candidates are owned by the coordinator, which incorporates RPC results between rounds. Value lookup checks size and `SHA-256(value) == key` before caching. `Store` replicates to the *k* closest nodes.
-- **Mutable-value extension** (`value.go`): non-content-addressed values require an installed `ValueValidator`. The callback receives the key, current value, and incoming value; only acceptance permits replacement. `StoreAt` publishes under an explicit key, and replication preserves that key. The registry callback can fetch missing immutable records with `LookupData` before accepting an update. Ownership, signatures, and history rules belong to the registry package, which is still pending.
+- **Mutable-value extension** (`value.go`): non-content-addressed values require an installed `ValueValidator`. The callback receives the key, current value, and incoming value; only acceptance permits replacement. `StoreAt` publishes under an explicit key, and replication preserves that key. The installed registry callback fetches missing immutable records with `LookupData` before accepting an update. Remote lookup results share the same validation, but only immutable results are cached. Mutable pointers are retained through STORE, so non-replica readers and publishers do not create copies that later publications would miss.
 - **Network layer** (`network.go`): the four RPCs (PING, STORE, FIND_NODE, FIND_VALUE) are defined behind `RPCClient`, so the transport can be replaced for simulated tests. The real implementation uses UDP, JSON serialization, random request IDs, response correlation, and configurable timeouts/retries.
 - **Simulated network and experiments** (`simnetwork.go`, `experiment/`): in-process nodes use the same core through `RPCClient`, with configurable latency, per-packet loss, retries, and seeds. Nodes join through the normal bootstrap procedure. The experiment runner records the nodes' own lookup events for analysis by a separate Python script.
 - **Joining** (`maintenance.go`): contact a bootstrap node, insert it into the routing table, look up our own ID, and perform lookups for random IDs in every bucket farther away than the closest responsive neighbor. Bucket 0 is the farthest range in our implementation. Startup accepts `BOOTSTRAP=IP:PORT`; the CLI also supports `join IP:PORT`.
 - **Periodic replication** (`maintenance.go`): one worker per node periodically copies its local store and republishes those values to the current closest nodes. `REPLICATION_INTERVAL` defaults to one hour. Local values have no TTL and are never removed by this worker.
 - **Periodic routing refresh** (`maintenance.go`): a separate worker scans for buckets with no outgoing lookup in their range for `REFRESH_INTERVAL` (default one hour). It looks up a random ID in each idle range, including empty buckets, and skips isolated nodes. A failed refresh advances the attempt timestamp and is retried after the interval.
 - **Instrumentation** (`lookup.go`): JSON probe and outcome events correlate by node ID and lookup ID. Outcomes include success, errors, logical probe counts, rounds, elapsed time, local cache hits, and exact-target discovery. Retransmissions are excluded from logical probe counts.
-- **CLI** (`main.go`): supports `ping`, `join`, `put`, `get`, `show rt`, `show ds`, and `exit`. Headless container nodes run until signaled to stop.
+- **CLI** (`main.go`, `registry_cli.go`): supports `ping`, `join`, `put`, `get`, `show rt`, `show ds`, `exit`, `keygen`, `publish`, `install`, `show DOMAIN:PACKAGE`, and `show dns DOMAIN`. Registry validation is installed before the UDP listener starts. Headless container nodes run until signaled to stop.
 - **Containerization**: each node runs as a separate Docker container from a single image (`kadlab`), deployed via Docker Swarm (`docker stack deploy`). We've verified containers can reach each other over the Docker overlay network and tested scaling to 50 replicas.
 
-## Current status (October 11, before registry integration)
+## Current status (registry integrated)
 
 **Done:**
 - Docker build + multi-container deployment; verified node-to-node connectivity and scaling to 50 nodes
@@ -45,14 +45,14 @@ We are implementing the Kademlia DHT as specified in the course's `LAB-SPEC.md`,
 - Required scalability and packet-loss experiments, with CSV results, figures, and an external analysis script
 - Mutable-value validator hook, explicit-key publication, accepted-pointer retrieval, and replication
 - Tests for concurrent pointer updates and fetching missing records during validation over UDP
+- Registry and CLI integration, signed records/pointers, domain ownership, and fork/rollback rejection
+- A 1000-node registry test, including repeated latest installs and publication from non-replicas
+- Shared fake-DNS owners file in the container configuration; private keys remain per container
 - Thread-safety discussion below
 
 **Remaining work:**
-- Kim's registry: signed version records and latest pointers, domain ownership, no-fork/no-rollback rules, and history verification
-- Registry startup wiring and CLI: `publish` including `--force` and `--prev`, `install` including `latest`, package/DNS inspection, and interpreted `show ds`
-- Integration tests and renewed race/coverage checks after the registry is merged
 - Final report additions describing the registry's encoding, signatures, ownership, history rules, and limitations
-- Final demonstration preparation and report upload to Canvas before the last review; every member must be able to demonstrate and explain all requirements
+- Final 50-container demonstration of the integrated build, and report upload to Canvas before the last review; every member must be able to demonstrate and explain all requirements
 
 ## Thread safety
 
@@ -63,6 +63,8 @@ The CLI, UDP request handlers, concurrent lookup probes, and periodic replicatio
 `Kademlia.dataMu` is a `sync.RWMutex`. `StoreValue` takes its exclusive lock while initializing or updating the map; `localValue` and `Entries` take a read lock while inspecting it. Stored and returned byte slices are copied, preventing callers from modifying the store through an aliased slice. `Entries` returns a snapshot for display and replication. The replication worker releases this read lock before doing lookups or sending STORE RPCs, so a slow peer cannot block incoming STORE requests by holding the data lock.
 
 Mutable validation runs outside the data lock against copied inputs, allowing the callback to fetch and cache missing immutable records through the same node. Before committing, `StoreValue` compares the current entry with the snapshot. If another write changed it, validation repeats against the new value. This prevents a decision based on an old head from overwriting a competing accepted update. The validator must be safe for concurrent calls and repeated evaluation. A matching-hash blob cannot overwrite an existing mutable pointer: the literal namespace string is a known preimage of the pointer key, so permitting that overwrite would bypass the validator. Rejected pointers leave the accepted pointer intact; fetched immutable records can remain cached.
+
+Lookup acceptance uses this same validation and concurrent-state recheck, while retaining only content-addressed results. We deliberately do not infer mutable replica membership from a reader's incomplete routing table: STORE establishes replicas, and reads do not add pointer copies. The registry backend therefore also avoids forcing a local pointer copy on the publisher. This fixes repeated `install latest` on readers outside the k closest nodes. It adds a network pointer lookup for subsequent reads on those nodes, while their immutable records and package bytes remain cached.
 
 ### Routing tables and buckets (`routingtable.go`, `bucket.go`)
 
@@ -81,6 +83,10 @@ Bucket lookup timestamps share the bucket mutex. The refresh worker atomically c
 One replication goroutine and one refresh goroutine each run passes sequentially. Context cancellation and a wait group stop and join both before the node closes its listener. Cancellation is checked between stored values or buckets; in-flight lookups/stores finish under the transport's timeout/retry policy. Network or bucket locks are not held while waiting for workers. A value lookup also drains its current batch before returning, leaving no outstanding lookup RPCs behind.
 
 ### Verification
+
+After merging the registry and shared-volume configuration, the mutable read-cache fix passed the full race/coverage suite with **93.2% combined statement coverage**, including both 1000-node tests. `go vet ./...` and a node build also passed. The registry regression now requires a non-replica to install the newer release after another publication and then publish a valid successor. Core tests require that a read-only pointer is neither served through FIND_VALUE nor periodically republished.
+
+A separate real UDP check ran 12 node processes with k=10, choosing both publisher and reader outside the ten closest pointer replicas. The reader installed 1.0.0, then 1.1.0 after publication, while retaining only immutable records and blobs. Forced rollback, forced fork, and wrong-owner publication were rejected by the ten replicas, and latest still installed 1.1.0. All temporary processes were stopped. This local-process check does not substitute for the final 50-container demonstration; Docker was not running on the test machine.
 
 On October 11, the integrated simulator, experiments, and mutable-value core passed `go test -race -coverpkg=./... -coverprofile=coverage.out ./...`, `go vet ./...`, and a node build with Go 1.26.3. Combined statement coverage was **90.9%**, exceeding the required 80%. The full suite included the 1000-node test, concurrent pointer validation, rejected-update preservation, and successful and failed missing-history fetches over real loopback UDP. This is the pre-registry baseline; repeat these checks after the registry and CLI are integrated.
 
@@ -121,7 +127,9 @@ The results use independent packet loss after healthy setup, no churn during the
 - Values are kept in memory. Replication helps only while at least one copy survives; stopping all nodes loses the data. Disk persistence is optional in the lab specification.
 - Values travel inside single JSON-encoded UDP datagrams and are limited to **4096 bytes (4 KiB)**. Base64 expands that to 5464 characters plus metadata. This conservative limit exceeds the required 255-byte minimum and accommodates the development Mac's smaller UDP send limit: a proposed 32 KiB value failed a real loopback test with `message too long`. The wire encoder also checks the 65,507-byte IPv4 payload ceiling. Fragmentation/loss remains possible. Larger values need chunking or a TCP data plane.
 - Idle refresh can perform up to 256 lookups in a scan; scans are sequential and an unresponsive network can delay the next pass or shutdown until the current lookup finishes.
-- The core's mutable-pointer hook is ready, but signed records, ownership checks, history policy, and registry commands still require integration. `LookupData` returns a cached accepted pointer without polling peers for a newer version, so it does not guarantee a globally freshest head. Replication is per destination and can partially succeed; a multi-node publication is not a transaction.
+- Mutable read caching is disabled, but an actual STORE replica that misses a publication can still serve an old accepted pointer. The fix is not a globally freshest-head guarantee. Replication is per destination and can partially succeed; a multi-node publication is not a transaction.
+- A non-replica reader does not retain a mutable history checkpoint between reads. Nodes without an accepted pointer verify the complete supplied chain but cannot detect a prior fork that they never learned. Nodes with stored history reject updates that do not extend it. There is no global consensus mechanism to reconcile two independently accepted histories.
+- `LookupData` can return `ErrValueNotFound` after exhausted or unresponsive peers, so callers cannot always distinguish absence from network failure. A long history catch-up runs inside the UDP STORE handler and may exceed the sender's 500 ms timeout. The existing retries and idempotent validation help, but long-chain timing under loss has not been established by the local demonstration.
 
 Run instructions and an explanation of the data flow are in [labs/RUNNING.md](labs/RUNNING.md).
 

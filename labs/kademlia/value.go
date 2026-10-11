@@ -25,10 +25,18 @@ func (kademlia *Kademlia) SetValueValidator(validator ValueValidator) {
 	kademlia.validator = validator
 }
 
-// StoreValue validates and stores an incoming key-value pair. Both STORE RPCs
-// and remote FIND_VALUE results use this path. Mutable values replace current
-// only if the validator accepts them against the value still stored at commit.
+// StoreValue validates and stores an incoming STORE key-value pair. Mutable
+// values replace current only if the validator accepts them against the value
+// still stored at commit. Lookup results share validation but retain only
+// immutable values, so reading a pointer does not create an extra stale replica.
 func (kademlia *Kademlia) StoreValue(key *KademliaID, data []byte) error {
+	return kademlia.acceptValue(key, data, true)
+}
+
+// acceptValue caches immutable values after hash verification. Mutable values
+// always require validation, but are retained only for explicit STOREs. Read
+// caches would not receive later publications sent to the k closest nodes.
+func (kademlia *Kademlia) acceptValue(key *KademliaID, data []byte, storeMutable bool) error {
 	if err := validateValueSize(data); err != nil {
 		return err
 	}
@@ -76,10 +84,12 @@ func (kademlia *Kademlia) StoreValue(key *KademliaID, data []byte) error {
 			kademlia.dataMu.Unlock()
 			continue
 		}
-		if kademlia.data == nil {
-			kademlia.data = make(map[string][]byte)
+		if validator == nil || storeMutable {
+			if kademlia.data == nil {
+				kademlia.data = make(map[string][]byte)
+			}
+			kademlia.data[keyString] = data
 		}
-		kademlia.data[keyString] = data
 		kademlia.dataMu.Unlock()
 		return nil
 	}

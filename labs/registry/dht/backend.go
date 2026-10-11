@@ -46,15 +46,12 @@ func (b *Backend) PutMutable(key string, value []byte) error {
 	if err := b.node.StoreAt(id, value); err != nil {
 		return summarize(err)
 	}
-	// A pointer this node cached earlier would otherwise stay the version that
-	// LookupData returns here, because a local hit never asks the network. The
-	// replicas have already validated the value, so a failure here is harmless.
-	_ = b.node.StoreValue(id, value)
 	return nil
 }
 
-// GetMutable can return a stale pointer: LookupData answers from the local
-// store without asking the network whether a newer one exists.
+// GetMutable queries the DHT without creating a read cache of the pointer.
+// Nodes holding an explicit STORE replica can still answer locally; this is
+// not a global-freshness guarantee if a replica missed a publication.
 func (b *Backend) GetMutable(key string) ([]byte, error) {
 	return lookup(b.node, key)
 }

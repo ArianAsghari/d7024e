@@ -141,9 +141,9 @@ func (kademlia *Kademlia) LookupContact(target *Contact) (contacts []Contact, er
 }
 
 // LookupData searches locally and then performs an iterative FIND_VALUE
-// lookup. Remote values must match their hash or pass the configured validator
-// before being cached. A local hit returns the last accepted value; it does not
-// poll peers for newer mutable values.
+// lookup. Remote values must match their hash or pass the configured validator.
+// Only immutable lookup results are cached; mutable replicas are kept by STORE,
+// not by reads. A local STORE replica is returned without polling other peers.
 func (kademlia *Kademlia) LookupData(hash string) (value []byte, source *Contact, err error) {
 	trace := kademlia.startLookup("FIND_VALUE", hash)
 	defer func() { trace.complete(err, err == nil, err == nil && source == nil, false) }()
@@ -183,7 +183,7 @@ func (kademlia *Kademlia) LookupData(hash string) (value []byte, source *Contact
 			}
 			kademlia.routingTable.AddContact(reply.contact)
 			if reply.result.Found {
-				if validationErr := kademlia.StoreValue(key, reply.result.Value); validationErr != nil {
+				if validationErr := kademlia.acceptValue(key, reply.result.Value, false); validationErr != nil {
 					candidate.failed = true
 					invalidValueErr = errors.Join(invalidValueErr, validationErr)
 					log.Printf("kademlia: discarded invalid value for key %s from %s: %v", key, reply.contact.Address, validationErr)
@@ -293,7 +293,7 @@ func (kademlia *Kademlia) localValue(key *KademliaID) ([]byte, bool) {
 	defer kademlia.dataMu.RUnlock()
 
 	value, ok := kademlia.data[key.String()]
-	// Every write passes through StoreValue. Mutable values were validated on
+	// Every write passes through acceptValue. Mutable values were validated on
 	// acceptance and must remain readable even though their hash is not the key.
 	if !ok {
 		return nil, false

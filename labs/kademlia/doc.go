@@ -20,9 +20,13 @@
 // identical updates from retries or replication. Bound history traversal and
 // reject cycles in the registry; do not recursively validate the same pointer.
 //
-// FIND_VALUE serves the last accepted local value. LookupData validates remote
-// values through StoreValue and caches accepted results; a local hit does not
-// query the network for a newer pointer. Republish preserves each original key.
+// FIND_VALUE serves the last accepted local value. LookupData shares STORE's
+// validation but caches only immutable results. Reading a mutable pointer does
+// not create an extra replica that future StoreAt publications would miss.
+// Explicit STORE replicas still answer locally, so missed writes or churn can
+// leave an actual replica behind; this is not a global-freshness guarantee.
+// Non-replica readers do not retain a history checkpoint between reads.
+// Republish preserves each original key.
 // Without a validator, non-content-addressed writes return ErrHashMismatch.
 // A content-addressed blob cannot replace an accepted mutable value, even when
 // it is the known preimage of the pointer's key; this returns ErrValueConflict.

@@ -328,9 +328,10 @@ func TestStalePointerCannotRollBackTheNetwork(t *testing.T) {
 	}
 }
 
-func TestPublisherRefreshesItsOwnCachedPointer(t *testing.T) {
+func TestPublisherReadsLatestWithoutKeepingAnExtraPointer(t *testing.T) {
 	r := newRegNet(t, 40, 8)
-	const publisher = 17
+	ranked := r.ranked()
+	publisher := ranked[len(ranked)-1]
 	r.publish(0, "1.0.0")
 	if _, err := r.client(publisher).Install(testDomain, testPkg, registry.Latest); err != nil {
 		t.Fatal(err)
@@ -341,34 +342,46 @@ func TestPublisherRefreshesItsOwnCachedPointer(t *testing.T) {
 		t.Fatalf("publisher installs %v, %v", got, err)
 	}
 	r.publish(publisher, "1.2.0")
+	if storedValue(r.net.Nodes[publisher], r.key()) != nil {
+		t.Fatal("non-replica publisher retained a pointer that later updates would miss")
+	}
 }
 
-func TestStaleLocalPointerLimitation(t *testing.T) {
+func TestNonReplicaReadsLatestAfterPublication(t *testing.T) {
 	r := newRegNet(t, 40, 8)
 	r.publish(0, "1.0.0")
 	reader := -1
-	for i := range r.net.Nodes {
+	for _, i := range r.ranked()[kademlia.DefaultK:] {
 		if i != 0 && storedValue(r.net.Nodes[i], r.key()) == nil {
 			reader = i
 			break
 		}
 	}
+	if reader < 0 {
+		t.Fatal("no non-replica reader found")
+	}
 	if _, err := r.client(reader).Install(testDomain, testPkg, registry.Latest); err != nil {
 		t.Fatal(err)
 	}
+	if storedValue(r.net.Nodes[reader], r.key()) != nil {
+		t.Fatal("install cached a mutable pointer on a non-replica")
+	}
 	r.publish(0, "1.1.0")
 
-	// The reader cached 1.0.0 and a local hit never asks the network, so it
-	// neither installs the new latest version nor can it extend the history.
+	// A repeat install must ask the replicas again, and a later publication
+	// from this reader must extend the new head rather than fork the old one.
 	got, err := r.client(reader).Install(testDomain, testPkg, registry.Latest)
-	if err != nil || got.Version.String() != "1.0.0" {
-		t.Fatalf("install latest on a node with a stale pointer = %v, %v", got, err)
+	if err != nil || got.Version.String() != "1.1.0" {
+		t.Fatalf("repeat install latest = %v, %v", got, err)
 	}
-	if _, err := r.client(reader).Publish(r.opts("1.2.0"), r.priv); !errors.Is(err, registry.ErrFork) {
-		t.Fatalf("publish from a node with a stale pointer = %v", err)
+	if _, err := r.client(reader).Publish(r.opts("1.2.0"), r.priv); err != nil {
+		t.Fatalf("publish from the reader = %v", err)
 	}
-	if v := pointerVersion(t, r.legitPointer()); v != "1.1.0" {
+	if v := pointerVersion(t, r.legitPointer()); v != "1.2.0" {
 		t.Fatalf("network latest = %s", v)
+	}
+	if storedValue(r.net.Nodes[reader], r.key()) != nil {
+		t.Fatal("non-replica retained a pointer after reading or publishing")
 	}
 }
 
