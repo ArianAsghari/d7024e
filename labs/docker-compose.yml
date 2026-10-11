@@ -12,6 +12,9 @@ services:
     environment:
       HEADLESS: "1"
       REPLICATION_INTERVAL: "1h"
+      OWNERS_FILE: "/shared/owners.json"
+    volumes:
+      - registry_shared:/shared
     deploy:
       replicas: 1
       # Resolve the node's actual IP, rather than a virtual service IP whose
@@ -27,6 +30,9 @@ services:
       HEADLESS: "1"
       BOOTSTRAP: "bootstrap:8000"
       REPLICATION_INTERVAL: "1h"
+      OWNERS_FILE: "/shared/owners.json"
+    volumes:
+      - registry_shared:/shared
     deploy:
       # 5 replicas for fast local dev. The lab requires demonstrating at
       # least 50; scale up for that with:
@@ -51,3 +57,12 @@ services:
 networks:
   kademlia_network:
     attachable: true
+
+# Part 2 (package registry): every node must see the same domain -> public key
+# table, which stands in for DNS TXT records. The volume holds that one file
+# (owners.json). It is a named volume, so it is shared by all containers on one
+# Docker host, which is what this lab setup uses. Private keys stay inside each
+# container (KEYS_DIR, default /keys), so run keygen and publish in the same
+# container session, or mount a directory of your own at /keys.
+volumes:
+  registry_shared:
