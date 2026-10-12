@@ -8,6 +8,10 @@
 
 **Implementation assessed:** `e98c92d` (source and recorded results checked at `64ba538`; later changes are documentation only). **Report date:** 12 October 2026. `REPORT.md` is the source for the final report and PDF export.
 
+## Summary
+
+We implemented a decentralized package registry in Go in two layers. Part 1 is a Kademlia distributed hash table that stores content-addressed values over UDP. Part 2 adds domain-owned package names, Ed25519-signed version records and a mutable latest pointer that every node validates against rollback and forks. On a simulated network, lookups needed 10.0 to 14.2 probes for nodes and 3.0 to 6.6 for values as the network grew from 16 to 2048 nodes. At 50% per-leg packet loss, value lookups still succeeded 99.7% to 99.9% of the time with two retries, against 83.7% to 84.5% without retries. The test suite, including two 1000-node scenarios, passes with the race detector at about 93% statement coverage, and the registry was verified on a 50-container Docker Swarm.
+
 ## 1. Introduction
 
 We built a decentralized package registry for D7024E Mobile and Distributed Computing Systems at Luleå University of Technology. Package files are distributed across participating nodes instead of one central server. Part 1 provides a Kademlia distributed hash table (DHT): a key-value store that finds data by a 256-bit identifier. Part 2 adds names such as `example.com:tool:1.0.0`, domain ownership, signed release records and a mutable pointer to the latest release. Each node checks that updates extend its accepted history, while clients verify who published a package and that its contents match the signed record.
@@ -25,6 +29,39 @@ This report follows the [lab specification](labs/LAB-SPEC.md) and [package-regis
 The registry package contains signing, ownership, version validation and client operations behind a small `Backend` interface. `registry/dht` adapts that interface to Kademlia, using Store for immutable values, `StoreAt` for the mutable latest pointer, and `LookupData` for reads. `registry_cli.go` exposes the package commands. The registry validator is installed before the UDP listener starts.
 
 The data path is: command → registry client when applicable → Kademlia lookup/storage → `RPCClient` → remote node. Incoming STORE requests validate values before changing local state. Maintenance workers reuse the same storage and lookup operations.
+
+```text
+CLI or headless loop (main.go, registry_cli.go)
+├── put, get, ping, join, show rt, show ds ───────────────► kademlia
+└── publish, install, keygen, show DOMAIN:PACKAGE
+        │
+        ▼
+    registry (records, signatures, owners, version rules)
+        │  Backend interface
+        ▼
+    registry/dht adapter ── Store, StoreAt, LookupData ──► kademlia
+                         └─ installs the validator ─────► kademlia
+
+kademlia: routing table, iterative lookup, storage, validator hook,
+          replication and refresh workers
+        │  RPCClient interface
+        ├── real UDP transport (PING, STORE, FIND_NODE, FIND_VALUE)
+        └── simulated network (seeded loss and latency, 1000+ nodes)
+```
+
+For readers who want to modify the system, this table maps the components to the source files.
+
+| Location | Role |
+| --- | --- |
+| `labs/main.go`, `labs/registry_cli.go` | node assembly, configuration, CLI commands |
+| `labs/kademlia/routingtable.go`, `bucket.go` | 256 k-buckets, recency order, eviction |
+| `labs/kademlia/lookup.go`, `kademlia.go`, `value.go` | iterative lookups, storage, hash and validator checks |
+| `labs/kademlia/maintenance.go` | replication and bucket-refresh workers |
+| `labs/kademlia/network.go`, `simnetwork.go` | UDP transport and the seeded in-process simulated network |
+| `labs/registry/` | records, signatures, ownership, version rules, publish and install client |
+| `labs/registry/dht/` | adapter from the registry to Kademlia, and validator installation |
+| `labs/experiment/`, `labs/cmd/experiments/`, `labs/scripts/analyze.py` | experiment runner and analysis script |
+| `labs/Dockerfile`, `labs/docker-compose.yml` | container image and Swarm deployment |
 
 ### 2.2 Identifiers, routing and parallel lookup
 
@@ -62,6 +99,16 @@ A release uses three linked objects. The package blob is stored under its conten
 Version record: {tag, domain-name, package-name, version, blobHash, previous-version-record, sig}
 Latest pointer: {tag, domain-name, package-name, version, versionRecordHash, sig}
 ```
+
+```text
+latest pointer  (key SHA-256("domain:package:latest"); the only mutable entry)
+   └──► record 1.2.0 ──► record 1.1.0 ──► record 1.0.0 ──► 64 zeros
+            │                 │                │
+            ▼                 ▼                ▼
+        blob 3            blob 2            blob 1
+```
+
+Here "record" means version record. A new release adds a record at the head and moves the pointer. Every record and blob is stored under the SHA-256 of its own bytes.
 
 The version-record key is SHA-256 of the complete canonical signed record. `previous-version-record` is a 64-digit lowercase hexadecimal hash, or 64 zeros for the first release. The pointer key is SHA-256("domain:package:latest"). This pointer is the intentional exception to content addressing: its key stays constant when its value changes.
 
@@ -131,7 +178,7 @@ Replication and refresh each run sequential passes in one worker. Idle-range che
 
 ### 6.1 Automated checks
 
-We ran the complete six-package suite on 12 October 2026 with Go 1.26.3 on darwin/arm64, race detection and a fresh combined coverage profile. All tests passed with **93.3% combined statement coverage**, above the required 80%. Both 1000-node scenarios ran without short-mode exclusions. `go vet ./...` and the node build also passed. These checks used source at `64ba538`, whose changes after `e98c92d` are documentation only. We also rebuilt the container image from `e98c92d` for the integrated run below.
+We ran the complete six-package suite on 12 October 2026 with Go 1.26.3 on darwin/arm64, race detection and a fresh combined coverage profile. All tests passed with about 93% combined statement coverage (**93.3%** in this run; an independent rerun with Go 1.27.1 gave 93.8%, so the figure varies slightly between runs), above the required 80%. Both 1000-node scenarios ran without short-mode exclusions. `go vet ./...` and the node build also passed. These checks used source at `64ba538`, whose changes after `e98c92d` are documentation only. We also rebuilt the container image from `e98c92d` for the integrated run below.
 
 Tests cover routing and bucket eviction, join and refresh ranges, replica restoration after churn, α bounds and overlapping probes, size limits, hash checks, event logging and cancellation. Real loopback UDP tests cover message correlation, multi-peer lookups, maximum-sized values, fetching history during validation, late STORE completion after a timeout and acknowledgement with a longer deadline. Race detection checks exercised execution paths; it is not a proof of every possible interleaving.
 
