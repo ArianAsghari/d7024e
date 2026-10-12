@@ -1,156 +1,276 @@
-# D7024E Lab Report — Kademlia DHT
+# D7024E Lab Report — Decentralized Package Registry
 
 **Group number:** 9
+
 **Group members:** Sungtae Kim, Jerald Jia Wei Lim, Arian Asghari
-**Repository:** https://github.com/ArianAsghari/d7024e (shared development branch: `Sprint-2`)
 
-## Frameworks and tools
+**Repository:** [ArianAsghari/d7024e](https://github.com/ArianAsghari/d7024e)
 
-- Go 1.22 — standard library only so far, no external dependencies
-- Docker + Docker Swarm for containerization
-- `crypto/sha256` for content hashing and node ID derivation
+**Implementation assessed:** `e98c92d` (source and recorded results checked at `64ba538`; later changes are documentation only). **Report date:** 12 October 2026. `REPORT.md` is the source for the final report and PDF export.
 
-## System architecture overview
+## 1. Introduction
 
-We are implementing the Kademlia DHT as specified in the course's `LAB-SPEC.md`, using 256-bit (SHA-256) node IDs and keys.
+We built a decentralized package registry for D7024E Mobile and Distributed Computing Systems at Luleå University of Technology. Package files are distributed across participating nodes instead of one central server. Part 1 provides a Kademlia distributed hash table (DHT): a key-value store that finds data by a 256-bit identifier. Part 2 adds names such as `example.com:tool:1.0.0`, domain ownership, signed release records and a mutable pointer to the latest release. Each node checks that updates extend its accepted history, while clients verify who published a package and that its contents match the signed record.
 
-- **Node identity**: each node's ID is derived as `SHA-256(IP:port)`, computed at startup from the container's own network address.
-- **Routing table**: a fixed array of 256 k-buckets. Each bucket holds up to *k* contacts (default 10, configurable). Existing contacts move to the most-recently-seen end. A full bucket PINGs its least-recently-seen contact, retaining it if responsive and replacing it if unresponsive.
-- **Core algorithm** (`kademlia.go`, `lookup.go`): implements iterative node and value lookups in rounds of up to alpha concurrent probes (default 3; adjustable through `ALPHA` or `SetAlpha`). Each peer is queried at most once; candidates are owned by the coordinator, which incorporates RPC results between rounds. Value lookup checks size and `SHA-256(value) == key` before caching. `Store` replicates to the *k* closest nodes.
-- **Mutable-value extension** (`value.go`): non-content-addressed values require an installed `ValueValidator`. The callback receives the key, current value, and incoming value; only acceptance permits replacement. `StoreAt` publishes under an explicit key, and replication preserves that key. The installed registry callback fetches missing immutable records with `LookupData` before accepting an update. Remote lookup results share the same validation, but only immutable results are cached. Mutable pointers are retained through STORE, so non-replica readers and publishers do not create copies that later publications would miss.
-- **Network layer** (`network.go`): the four RPCs (PING, STORE, FIND_NODE, FIND_VALUE) are defined behind `RPCClient`, so the transport can be replaced for simulated tests. The real implementation uses UDP, JSON serialization, random request IDs, response correlation, and configurable timeouts/retries.
-- **Simulated network and experiments** (`simnetwork.go`, `experiment/`): in-process nodes use the same core through `RPCClient`, with configurable latency, per-packet loss, retries, and seeds. Nodes join through the normal bootstrap procedure. The experiment runner records the nodes' own lookup events for analysis by a separate Python script.
-- **Joining** (`maintenance.go`): contact a bootstrap node, insert it into the routing table, look up our own ID, and perform lookups for random IDs in every bucket farther away than the closest responsive neighbor. Bucket 0 is the farthest range in our implementation. Startup accepts `BOOTSTRAP=IP:PORT`; the CLI also supports `join IP:PORT`.
-- **Periodic replication** (`maintenance.go`): one worker per node periodically copies its local store and republishes those values to the current closest nodes. `REPLICATION_INTERVAL` defaults to one hour. Local values have no TTL and are never removed by this worker.
-- **Periodic routing refresh** (`maintenance.go`): a separate worker scans for buckets with no outgoing lookup in their range for `REFRESH_INTERVAL` (default one hour). It looks up a random ID in each idle range, including empty buckets, and skips isolated nodes. A failed refresh advances the attempt timestamp and is retried after the interval.
-- **Instrumentation** (`lookup.go`): JSON probe and outcome events correlate by node ID and lookup ID. Outcomes include success, errors, logical probe counts, rounds, elapsed time, local cache hits, and exact-target discovery. Retransmissions are excluded from logical probe counts.
-- **CLI** (`main.go`, `registry_cli.go`): supports `ping`, `join`, `put`, `get`, `show rt`, `show ds`, `exit`, `keygen`, `publish`, `install`, `show DOMAIN:PACKAGE`, and `show dns DOMAIN`. Registry validation is installed before the UDP listener starts. Headless container nodes run until signaled to stop.
-- **Containerization**: each node runs as a separate Docker container from a single image (`kadlab`), deployed via Docker Swarm (`docker stack deploy`). We've verified containers can reach each other over the Docker overlay network and tested scaling to 50 replicas.
+A node is one running program instance. Kademlia uses the numerical XOR distance between identifiers to select nearby peers; this distance does not represent physical location. A lookup progressively learns contacts closer to its target. The parameters k and α control the desired replica count/bucket capacity and the number of concurrent lookup probes, respectively. Our defaults are k = 10 and α = 3.
 
-## Current status (registry integrated)
+This report follows the [lab specification](labs/LAB-SPEC.md) and [package-registry design](labs/PART2-DESIGN.md). It explains the implementation, concurrency controls and limits, then evaluates lookup scalability, resilience to packet loss and the integrated registry on containers.
 
-**Done:**
-- Docker build + multi-container deployment; verified node-to-node connectivity and scaling to 50 nodes
-- Node ID generation via `hash(IP|port)`
-- All three Sprint 1 PRs merged; the shared Sprint 2 branch includes core, UDP networking, and CLI
-- Core lookup, store, and value retrieval with hash verification
-- PING-based full-bucket eviction, including concurrent contact-refresh protection
-- Bootstrap, self-lookup, and join-time bucket refresh
-- Periodic replication with configurable interval and cancellation; no expiration
-- Adjustable alpha-parallel node and value lookup (default 3)
-- Periodic idle-bucket refresh with cancellation
-- A 4096-byte value limit enforced at store and retrieval boundaries
-- JSON lookup probe/outcome instrumentation
-- Simulated transport and a 1000-node test covering join, lookup, storage, churn, and packet loss
-- Required scalability and packet-loss experiments, with CSV results, figures, and an external analysis script
-- Mutable-value validator hook, explicit-key publication, accepted-pointer retrieval, and replication
-- Tests for concurrent pointer updates and fetching missing records during validation over UDP
-- Registry and CLI integration, signed records/pointers, domain ownership, and fork/rollback rejection
-- A 1000-node registry test, including repeated latest installs and publication from non-replicas
-- Shared fake-DNS owners file in the container configuration; private keys remain per container
-- Integrated 50-container rerun on `e98c92d`: updated latest installs, invalid-update rejection by all ten replicas, and timeout comparison (reported by Kim)
-- Thread-safety discussion below
+## 2. Part 1: distributed storage
 
-**Remaining work:**
-- Final report additions describing the registry's encoding, signatures, ownership, history rules, and limitations
-- Demo rehearsal and report upload to Canvas before the last review; every member must be able to demonstrate and explain all requirements
+### 2.1 Components and data flow
 
-## Thread safety
+`labs/main.go` assembles each node’s routing table, in-memory store, UDP listener, command shell or headless loop, and replication and refresh workers. The `kademlia` package owns routing, storage and iterative lookup. It depends on the `RPCClient` interface, implemented by the real UDP transport and by an in-process simulated network. The same lookup and storage code therefore runs in container demonstrations and large simulated tests.
 
-The CLI, UDP request handlers, concurrent lookup probes, and periodic replication and refresh workers can access one node concurrently. The critical shared state is the local key-value map, each bucket's contact list, eviction state and lookup timestamp, lookup configuration, and the network transport's lifecycle fields.
+The registry package contains signing, ownership, version validation and client operations behind a small `Backend` interface. `registry/dht` adapts that interface to Kademlia, using Store for immutable values, `StoreAt` for the mutable latest pointer, and `LookupData` for reads. `registry_cli.go` exposes the package commands. The registry validator is installed before the UDP listener starts.
 
-### Local values (`kademlia.go`, `value.go`)
+The data path is: command → registry client when applicable → Kademlia lookup/storage → `RPCClient` → remote node. Incoming STORE requests validate values before changing local state. Maintenance workers reuse the same storage and lookup operations.
 
-`Kademlia.dataMu` is a `sync.RWMutex`. `StoreValue` takes its exclusive lock while initializing or updating the map; `localValue` and `Entries` take a read lock while inspecting it. Stored and returned byte slices are copied, preventing callers from modifying the store through an aliased slice. `Entries` returns a snapshot for display and replication. The replication worker releases this read lock before doing lookups or sending STORE RPCs, so a slow peer cannot block incoming STORE requests by holding the data lock.
+### 2.2 Identifiers, routing and parallel lookup
 
-Mutable validation runs outside the data lock against copied inputs, allowing the callback to fetch and cache missing immutable records through the same node. Before committing, `StoreValue` compares the current entry with the snapshot. If another write changed it, validation repeats against the new value. This prevents a decision based on an old head from overwriting a competing accepted update. The validator must be safe for concurrent calls and repeated evaluation. A matching-hash blob cannot overwrite an existing mutable pointer: the literal namespace string is a known preimage of the pointer key, so permitting that overwrite would bypass the validator. Rejected pointers leave the accepted pointer intact; fetched immutable records can remain cached.
+A node ID is SHA-256 of its concrete IP:port string. Immutable data is stored under SHA-256(value). Both are 256 bits. The routing table uses the permitted b = 1 simplification: 256 fixed k-buckets. k defaults to 10 and is adjustable through `NewRoutingTable(me, k)`, which also controls the desired replication factor.
 
-Lookup acceptance uses this same validation and concurrent-state recheck, while retaining only content-addressed results. We deliberately do not infer mutable replica membership from a reader's incomplete routing table: STORE establishes replicas, and reads do not add pointer copies. The registry backend therefore also avoids forcing a local pointer copy on the publisher. This fixes repeated `install latest` on readers outside the k closest nodes. It adds a network pointer lookup for subsequent reads on those nodes, while their immutable records and package bytes remain cached.
+Each bucket keeps contacts in recency order. A known contact moves to the most-recently-seen end. When the bucket is full, the node pings its least-recently-seen contact, retaining a responsive peer or replacing an unresponsive one. Protection against a contact being refreshed during that ping is described in Section 5.
 
-### Routing tables and buckets (`routingtable.go`, `bucket.go`)
+Both node and value lookups proceed iteratively in rounds of up to α concurrent probes. α defaults to 3 and is adjustable through `ALPHA` or `SetAlpha`. A coordinator owns the candidate set, waits for the current batch, incorporates referrals and excludes failed peers. Each peer is queried at most once per lookup, apart from transport-level retries. Node lookup ends when the closest remaining candidates have been queried; value lookup may finish after a batch returns valid data.
 
-The node's identity, bucket array, configured capacity, and PING callback are initialized before concurrent use and then remain fixed. Each bucket has its own `sync.RWMutex`: inserts, recency updates, and eviction-state changes take the write lock; list traversal and length queries take a read lock. Reads copy contact structs before calculating distances or sorting, so lookup-specific distances do not modify contacts in the shared list. Contact IDs are treated as immutable after construction, including IDs exposed through contact snapshots.
+### 2.3 Storage and the UDP protocol
 
-A full bucket selects its least-recently-seen entry under the write lock and records that entry's observation sequence. It then releases the lock before sending PING. Only one eviction probe is allowed per bucket at a time; other existing contacts can still be refreshed, and competing new contacts are discarded while the probe is active. On completion, the bucket reacquires the lock. A failed PING removes the selected contact only if its sequence has not changed: a packet received during the probe therefore prevents a stale timeout from evicting a now-responsive contact. A successful PING moves the contact to the most-recently-seen end. No bucket lock is held across an RPC or while acquiring another bucket's lock.
+Store hashes a value, finds the closest candidates including the local node when appropriate, and attempts replication to up to k nodes. `LookupData` checks the local store before querying peers. Immutable values must pass the size and hash checks on both storage and retrieval. Incorrect bytes are rejected and reported. Valid immutable lookup results are cached locally; mutable registry pointers follow the separate rules in Section 3.
 
-`FindClosestContacts` and `Buckets` collect separate bucket snapshots. They are safe to call concurrently with updates, but do not promise a single atomic snapshot of the entire routing table. Lookup candidate maps remain local to each invocation and are mutated only by that lookup's coordinator. Up to alpha workers perform RPCs and send results through a buffered channel; the entire batch is collected before processing. No candidate-map mutex is needed. `configMu` protects alpha, logger, and validator changes. Each lookup snapshots its settings, and an in-flight store retains its original validator. Lookup IDs use an atomic counter; standard `slog` handlers serialize concurrent writes. The simulator protects its node map, configuration, and observer with an RWMutex and per-sender RPC counters with a mutex. It releases these locks before serving a request; callbacks can therefore perform nested lookups. Experiment logs serialize writes with a mutex.
+The transport implements PING, STORE, FIND_NODE and FIND_VALUE over UDP. Each outgoing RPC uses its own connected socket and a random 128-bit request ID. The reply must match that identifier and the expected message type. An attacker unable to observe the request cannot feasibly guess its identifier; this is request correlation, not authentication of all network traffic.
 
-Bucket lookup timestamps share the bucket mutex. The refresh worker atomically checks and advances an idle timestamp before releasing the lock and making a lookup, avoiding duplicate scheduling by concurrent passes. Contact recency and lookup activity are separate: receiving a referral or reading a cached local value does not postpone a range's refresh.
+The default deadline is 500 ms per attempt, with two retries, giving at most three transmissions. Retries retain the same ID and payload. Malformed replies and replies with a different ID are ignored until the current deadline. `RPC_TIMEOUT` sets the deadline at startup. A STORE acknowledgement is sent after validation/storage, so validation that fetches missing history can outlast the publisher’s deadline.
 
-### Network and worker lifecycle (`network.go`, `maintenance.go`, `main.go`)
+Every value is limited to 4096 bytes (4 KiB), including package files, which exceeds the required 255-byte minimum. JSON encodes the bytes as base64, expanding a maximum-sized value to 5464 characters before metadata. The wire encoder also checks the 65,507-byte IPv4 UDP payload ceiling. The conservative value limit followed a failed 32 KiB loopback trial on the development Mac; it does not eliminate fragmentation on a real network.
 
-`Network.mu` protects the attached Kademlia pointer, listener connection, and closed flag. The receive loop copies each incoming datagram before handing it to a handler goroutine. Outgoing RPCs use their own request buffers, socket, and random request ID. Handlers send their response before updating routing state, because admitting a sender may trigger another PING; this prevents the reply from being delayed behind an eviction probe. Network identity, timeout, and retry settings are configured before concurrent use and are not changed at runtime.
+### 2.4 Joining, maintenance and commands
 
-The real UDP response deadline is configurable at startup through `RPC_TIMEOUT` (default 500 ms per attempt, with two retries). STORE replies wait for validation and storage; a mutable validator may fetch missing version records before returning. Expiration of the publisher's deadline does not cancel that work. A controlled UDP regression holds validation open until the sender times out, then confirms that the accepted value is still stored. Its companion case confirms that a longer deadline receives the acknowledgement. A separate CLI test rejects one of three pointer replicas and confirms both the error message and the retained writes on the other two. Publications remain independent writes rather than an atomic transaction.
+A joining node pings its bootstrap contact, adds it to the routing table and looks up its own ID. It then refreshes buckets farther away than its closest responsive neighbor by looking up random targets in those ranges. `BOOTSTRAP` performs this at startup; join IP:PORT exposes it to an already running shell. Hostnames resolve to the actual node address before the ID is derived.
 
-One replication goroutine and one refresh goroutine each run passes sequentially. Context cancellation and a wait group stop and join both before the node closes its listener. Cancellation is checked between stored values or buckets; in-flight lookups/stores finish under the transport's timeout/retry policy. Network or bucket locks are not held while waiting for workers. A value lookup also drains its current batch before returning, leaving no outstanding lookup RPCs behind.
+A replication worker snapshots the local store and republishes values to the currently closest nodes, preserving explicit keys for mutable pointers. `REPLICATION_INTERVAL` defaults to one hour. Values have no expiration, as required. A separate worker refreshes each idle bucket range, including empty buckets, after `REFRESH_INTERVAL`, also one hour by default. It skips isolated nodes and records failed refresh attempts so they are retried after the interval.
 
-### Verification
+The storage shell supports `ping IP:PORT`, `put FILENAME`, `get KEY [FILENAME]`, `show rt`, `show ds`, `exit` and `join IP:PORT`. Ping prints round-trip time; put prints the content key; get prints or writes the bytes and identifies the source or a local hit. Routing output omits empty buckets and abbreviates identifiers. Headless service containers run until signaled to stop.
 
-After confirming that both remote branches pointed to `e98c92d`, a final local `go test -race ./...` passed across all six packages, including both 1000-node tests. `go vet ./...` and the node build also passed.
+## 3. Part 2: signed package registry
 
-Kim reported rebuilding the image from `e98c92d`, recreating all 50 containers, and repeating the registry scenarios. Two different readers installed the new latest version after publication: 1.1.0 to 1.2.0, then 1.2.0 to 1.3.0. Rollback, fork, and wrong-owner attempts were refused by all ten replicas. The earlier stale-cache reproduction used the content of `3611512`, before the cache fix in `dca4a65`; it was not a failure of the fixed build.
+### 3.1 Data model, encoding and ownership
 
-The timeout comparison below also used the rebuilt `e98c92d` image, which reads `RPC_TIMEOUT`. Kim withdrew his earlier apparent 2 s result because that older image ignored the setting.
+A release uses three linked objects. The package blob is stored under its content hash. An immutable version record binds that blob to a domain, package name and version, and points back to the previous version record. A signed latest pointer provides a stable, name-derived entry point to the history.
 
-| Per-attempt RPC timeout | Consecutive publications | Publications reporting a timeout |
+```text
+Version record: {tag, domain-name, package-name, version, blobHash, previous-version-record, sig}
+Latest pointer: {tag, domain-name, package-name, version, versionRecordHash, sig}
+```
+
+The version-record key is SHA-256 of the complete canonical signed record. `previous-version-record` is a 64-digit lowercase hexadecimal hash, or 64 zeros for the first release. The pointer key is SHA-256("domain:package:latest"). This pointer is the intentional exception to content addressing: its key stays constant when its value changes.
+
+Records are JSON objects with fixed field order and exact accepted spelling. Unknown fields, trailing data and non-canonical representations are rejected. Hashes and signatures use lowercase hexadecimal. Both record types sign the 32-byte SHA-256 digest of the canonical object without its `sig` member using Ed25519. Their distinct tags, version-record and latest-pointer, are included in the signed bytes, preventing a signature from being reused as the other record type.
+
+`DomainOwners` abstracts ownership. `DNSOwners` expects exactly one relevant TXT record at the domain apex: `kademlia-pk=<standard padded base64 of the 32-byte public key>`, without whitespace. Unrelated TXT records are ignored; a missing or ambiguous owner is rejected. `StaticOwners` supplies the permitted fake DNS through a JSON domain-to-key table. Real TXT parsing is tested with an injected resolver; the container demonstrations use the shared static file, not a live DNS server.
+
+Versions are numeric `MAJOR.MINOR.PATCH` triples with no signs or leading zeros, compared numerically, so `1.2.10` follows `1.2.9`. A successor must be strictly newer and extend the accepted record chain; consecutive numbers are not required. For example, `2.0.0` may be followed directly by `5.0.0` when the new record links to the accepted history. Course staff confirmed on 12 October that skipping numbers is intended, so this requires no code change. The meaning of a major, minor or patch increase is not enforced. Prerelease labels are unsupported, and `latest` is reserved. Domains must be lowercase DNS names; package names use lowercase letters, digits, dots, hyphens and underscores. Excluding colons makes `domain:package:version` unambiguous.
+
+### 3.2 Validation, rollback and fork prevention
+
+Every receiving node enforces the rules independently. The core’s `ValueValidator` callback receives the key, current accepted value and incoming value for a mutable update. It is also used to check mutable values returned by lookup. `StoreAt` publishes a value under an explicit key. The registry’s acceptance rules are:
+
+- The pointer must decode canonically, match the key derived from its own domain/package, and verify under that domain owner’s public key.
+- The referenced version record must be fetchable by hash, have a valid signature from the same owner, and agree with the pointer’s domain, package and version.
+- Against an existing pointer, a lower version is a rollback. The same version naming a different record is a fork. An identical accepted head is an idempotent repeat after pointer validation.
+- A newer version must have a valid chain of previous-record links reaching exactly the node’s accepted record. A history that branches elsewhere is a fork. Traversing backward must strictly decrease the version at every step, which rules out cycles.
+
+A node that missed several releases fetches and validates missing records through `LookupData` until it reaches its stored head. A node with no prior state verifies the complete supplied chain back to the zero predecessor. Missing history causes `ErrMissingRecord` and leaves the old pointer intact. Traversal is bounded to 1000 records by default.
+
+The latest pointer is structured because its signature must bind the target record to a particular domain, package and version. Repeating these fields prevents cross-package replay, permits early version comparison, and cross-checks the referenced record. Arbitrary labels such as “final” would not give replicas an objective order for detecting rollback. These protections are relative to a node’s known history; they do not implement global consensus.
+
+### 3.3 Publication, installation and mutable reads
+
+`publish [--force] [--prev=VERSION] DOMAIN:PACKAGE:VERSION FILENAME` first checks the proposed update with the real validator unless `--force` is supplied. Invalid ordinary publications are refused before upload. `--prev` chooses a predecessor explicitly, and `--force` permits an invalid proposal to reach the replicas for demonstration; it never disables receiving-node validation. Publication stores the blob, the signed record, and finally the signed latest pointer.
+
+`install DOMAIN:PACKAGE:VERSION [FILENAME]` resolves `latest` or follows the history to a requested version, verifies the relevant signatures and checks the blob hash before writing the package. The default filename is `PACKAGE-VERSION`. `show DOMAIN:PACKAGE` prints the version chain; `show dns DOMAIN` displays the believed owner and fingerprint; `show ds` decodes records and pointers. `keygen DOMAIN` creates demonstration credentials.
+
+A 50-container check exposed stale latest pointers on readers outside the k closest replicas: they cached an earlier pointer but did not receive later publications. The corrected implementation validates mutable lookup results without caching them. Only explicit STORE operations establish pointer replicas, and publishers do not force a local pointer copy. Immutable records and blobs remain cacheable. Repeated latest installs on non-replica readers therefore query the network again; a replica that missed a publication can still serve its older accepted pointer.
+
+Publication consists of independent writes, not one transaction. A replica that accepts a pointer retains it even when another destination rejects or times out. A timeout can mean the outcome is unknown, since validation may finish after the publisher stops waiting. The CLI explains that accepting replicas keep their writes.
+
+## 4. Libraries and tools
+
+The application has no third-party Go module dependencies. `labs/go.mod` declares Go 1.22.1, and the container builder uses Go 1.22. Goroutines and channels support concurrent RPC handlers, lookup probes and maintenance workers. The Dockerfile builds with `CGO_ENABLED=0` and copies the standalone executable into an Alpine runtime image. Using the standard library keeps these mechanisms inspectable without a separate RPC framework.
+
+- **UDP and JSON:** `net` provides UDP sockets, address resolution and the DNS TXT resolver. We use UDP because the lab explicitly requires it for RPCs, and implement request correlation, timeouts and retransmission ourselves as required. `encoding/json` gives us human-readable messages for inspection and a fixed encoding for registry records; strict canonical decoding makes the accepted record representation unique. `encoding/hex` represents hashes and signatures, and `encoding/base64` represents DNS public keys. JSON expands binary payloads as base64, adding overhead to our single-datagram transfers. Section 2.3 explains the 4 KiB value limit.
+- **Cryptography:** `crypto/sha256` supplies content hashes, node identifiers and signing digests. `crypto/rand` supplies key-generation randomness, unpredictable request identifiers and random refresh targets. `crypto/ed25519` provides deterministic signatures with compact 32-byte public keys and 64-byte signatures. A public key occupies 44 characters in padded base64, fitting easily in the DNS TXT format without an extra cryptography dependency.
+- **Data structures and concurrency:** `container/list` maintains bucket contacts in recency order; `sort` orders contacts by XOR distance. `sync` and `sync/atomic` protect shared state and counters. `context` and `time` control cancellation, maintenance intervals and deadlines. `math/rand` supplies seeded experiment inputs, and `hash/fnv` helps derive reproducible simulated transport draws.
+- **Shell, files and testing:** `bufio`, `fmt`, `strings`, `io`, `os` and `path/filepath` support commands, configuration and files. `errors` preserves failure causes; `log/slog` emits structured lookup events. Go's `testing` package, race detector and statement-coverage tooling support verification.
+- **Containers:** Docker runs one node per container; Docker Swarm supplies the overlay network and service scaling. One `kadlab` image provides the executable for the bootstrap and workers. We deployed one bootstrap plus 49 workers for the 50-container check.
+- **Analysis:** the separate script, `labs/scripts/analyze.py`, uses only Python's standard library to parse event logs, compute statistics and generate CSV tables and SVG figures. This keeps the analysis reproducible without plotting dependencies. The three figures below are the committed outputs of that script; we did not regenerate the full experiment sweep for the final report edit.
+
+## 5. Thread safety
+
+### 5.1 Values and concurrent validation
+
+The CLI, UDP handlers, parallel lookups and maintenance workers may access a node concurrently. `Kademlia.dataMu` is a sync.RWMutex protecting the value map: writes take the exclusive lock and reads take a shared lock. Stored and returned byte slices are copied, and `Entries` returns a snapshot. Replication releases the lock before lookups and STORE RPCs.
+
+Mutable validation runs outside the data lock on copied inputs. This is necessary because validation may fetch and cache immutable records through the same node. Before committing, `StoreValue` compares the current entry with the snapshot used for validation; if another writer changed it, validation repeats against the new state. This prevents a decision based on an obsolete head from overwriting a competing accepted update. Lookup acceptance uses the same state recheck while retaining only immutable data.
+
+A matching-hash blob cannot overwrite an existing mutable pointer. Otherwise, the known string domain:package:latest could be uploaded under its own hash to bypass pointer validation. The registry validator has no mutable per-call state and supports concurrent and repeated evaluation. `StaticOwners` uses an RWMutex; the file-backed provider serializes reloads and replaces its owners file by temporary-file rename, preventing partial-file reads. This is not a cross-process transaction for simultaneous owner registrations. Private key files use mode 0600.
+
+### 5.2 Buckets, lookup coordination and transport
+
+Each bucket has its own RWMutex for contacts, eviction state and lookup timestamps. Readers copy contact structures before calculating distances; IDs are treated as immutable. A full bucket selects its oldest contact and observation sequence under lock, then releases the lock before PING. Only one eviction probe runs per bucket. A failed probe removes the contact only if its observation sequence is unchanged, so a concurrently received message prevents stale eviction.
+
+Routing-table reads combine independent bucket snapshots rather than one atomic table snapshot. Each lookup’s coordinator exclusively owns its candidate map; workers only perform RPCs and return results through a buffered channel. `configMu` protects lookup configuration and validator changes, while lookup IDs use an atomic counter. The simulator locks shared maps and counters but releases locks before serving requests, allowing nested history lookups. Experiment-log writes are serialized.
+
+`Network.mu` protects the listener, closed state and attached node. The receive loop copies each datagram before handing it to a goroutine. Outgoing calls use private buffers, sockets and request IDs. Handlers send their reply before updating routing state, since admitting a contact can trigger an eviction ping. Network identity and timeout/retry settings are fixed before concurrent use.
+
+### 5.3 Maintenance and shutdown
+
+Replication and refresh each run sequential passes in one worker. Idle-range checks and timestamp updates occur atomically under the bucket lock, which is released before a lookup. Context cancellation and a wait group stop both workers before the listener closes. Cancellation is checked between values or buckets; in-flight RPCs finish under their deadline/retry policy. A value lookup drains its current batch before returning. No data or bucket lock is held while waiting on network I/O or worker shutdown.
+
+## 6. Testing and verification
+
+### 6.1 Automated checks
+
+We ran the complete six-package suite on 12 October 2026 with Go 1.26.3 on darwin/arm64, race detection and a fresh combined coverage profile. All tests passed with **93.3% combined statement coverage**, above the required 80%. Both 1000-node scenarios ran without short-mode exclusions. `go vet ./...` and the node build also passed. These checks used source at `64ba538`, whose changes after `e98c92d` are documentation only. We also rebuilt the container image from `e98c92d` for the integrated run below.
+
+Tests cover routing and bucket eviction, join and refresh ranges, replica restoration after churn, α bounds and overlapping probes, size limits, hash checks, event logging and cancellation. Real loopback UDP tests cover message correlation, multi-peer lookups, maximum-sized values, fetching history during validation, late STORE completion after a timeout and acknowledgement with a longer deadline. Race detection checks exercised execution paths; it is not a proof of every possible interleaving.
+
+The suite includes two 1000-node simulated scenarios. The DHT test exercises joining, node/value lookup, storage, 10% node removal and packet loss. The registry test publishes releases from different nodes, rejects wrong owners, rollback, forks, cycles and tampered pointers, catches up a replica that missed releases, and checks installation of current and old versions from 25 fresh readers. Regressions also require non-replica readers and publishers to observe a valid successor without retaining stale mutable copies.
+
+### 6.2 Integrated 50-container checks
+
+We rebuilt the image from `e98c92d` and recreated the stack on 11 October 2026: one bootstrap plus 49 worker containers on one Docker host. Demonstration clients joined the same overlay network. Every service mounted the named volume at `/shared` and used `OWNERS_FILE=/shared/owners.json`; private keys remained separate per container. The following results describe that rebuilt stack.
+
+- Valid publication and retrieval: owner publications succeeded; a keyless reader installed latest and a historical release. An unknown version returned an error. The chain, DNS-owner and decoded-store commands displayed the expected information.
+- Invalid updates: forced rollback, a forced fork from an earlier release and a wrong-owner publication were refused by all ten pointer replicas. Ordinary invalid publication was refused by the client before upload.
+- **Latest-pointer regression:** two different readers installed a new latest version after another publication, observing `1.1.0` → `1.2.0` and `1.2.0` → `1.3.0`. Our earlier run on `3611512` exposed stale read caches on non-replicas. The fix in `dca4a65` stops reads from retaining mutable pointers; the rebuilt `e98c92d` run did not reproduce that defect.
+
+We used the rebuilt stack for two short deadline comparisons:
+
+*Table 1. Publication timeouts in the rebuilt 50-container stack.*
+
+| RPC deadline per attempt | Consecutive publications | Reported STORE timeouts |
 | --- | --- | --- |
 | 500 ms | 8 | 2 |
 | 2 s | 8 | 0 |
 
-A fresh reader saw a complete 20-version history including both publications that reported a timeout. This confirms that a publication error does not imply that its update is absent; it does not establish the state of every replica. The small comparison supports using 2 s for the demonstration, not a general claim of zero timeout probability. History-fetch latency remains a plausible explanation for the delayed acknowledgements, without a timing trace establishing the cause of those individual timeouts. These container results are Kim's reported observations; the local tests described below are separate evidence.
+We then installed from a fresh reader and saw all 20 releases, `1.0.0` through `1.19.0`, including both publications that had reported timeouts. A timeout therefore does not imply that the update was absent. This observation does not establish the final state of every replica. The small comparison supports a 2 s publisher deadline for this demonstration, not a guarantee against future timeouts. Fetching history during validation is a plausible explanation for delayed acknowledgements, but we have no timing trace establishing the cause of those individual delays.
 
-The follow-up for the container timeout report passed the full race/coverage suite, including both 1000-node tests, with **93.3% combined statement coverage**. `go vet ./...` and a node build passed. `docker stack config` confirmed that the default 500 ms deadline and an explicit `RPC_TIMEOUT=2s` are passed to both services. Real UDP tests cover deadline configuration, delayed validation, late STORE completion, and acknowledgement with a longer deadline. These tests establish the timeout mechanism but do not identify the cause of Kim's individual timeouts.
+## 7. Experimental evaluation
 
-After merging the registry and shared-volume configuration, the mutable read-cache fix passed the full race/coverage suite with **93.2% combined statement coverage**, including both 1000-node tests. `go vet ./...` and a node build also passed. The registry regression now requires a non-replica to install the newer release after another publication and then publish a valid successor. Core tests require that a read-only pointer is neither served through FIND_VALUE nor periodically republished.
+### 7.1 Method and measurement definitions
 
-A separate real UDP check ran 12 node processes with k=10, choosing both publisher and reader outside the ten closest pointer replicas. The reader installed 1.0.0, then 1.1.0 after publication, while retaining only immutable records and blobs. Forced rollback, forced fork, and wrong-owner publication were rejected by the ten replicas, and latest still installed 1.1.0. All temporary processes were stopped. This was a local-process check; Docker was not running on the test machine. Kim's subsequent 50-container rerun is recorded above.
+The two required experiments use the [committed results](labs/experiments/results/summary.md), produced by the Go experiment runner and the external Python analysis script. Networks are generated from distinct random IP:port pairs hashed into IDs. Nodes join through randomly selected existing nodes using the normal join procedure. Random publishers store random values of 16–256 bytes. Seeds 1–10 are used for each configuration, with a separate seeded generator choosing measurement inputs.
 
-On October 11, the integrated simulator, experiments, and mutable-value core passed `go test -race -coverpkg=./... -coverprofile=coverage.out ./...`, `go vet ./...`, and a node build with Go 1.26.3. Combined statement coverage was **90.9%**, exceeding the required 80%. The full suite included the 1000-node test, concurrent pointer validation, rejected-update preservation, and successful and failed missing-history fetches over real loopback UDP. This is the pre-registry baseline; repeat these checks after the registry and CLI are integrated.
+Logging begins only after joining and initial storage, excluding setup work. Initial readers are chosen from nodes that do not already store the selected key. `lookup_probe` and `lookup_complete` events record logical RPC probes, batch rounds and success/failure. Retransmissions are excluded from logical probe counts. A successful value lookup must return bytes that pass the hash check; node results are also checked against the true closest ID computed from all simulated nodes, excluding the initiator.
 
-On October 9, `go test -race -coverpkg=./... -coverprofile=coverage.out ./...`, `go vet ./...`, and `go build` passed on the development Mac with Go 1.26.3. The combined statement coverage is **88.4%**, up from the September 28 baseline of 86.1%. Tests exercise concurrent routing-table/value access, full-bucket eviction, refresh-target ranges, bootstrap ordering, replication after churn, and worker cancellation. New tests use barriers to verify overlapping probes and alpha bounds for both lookup types, check JSON probe/outcome counts, duplicate referrals and timeouts, idle versus active ranges, refresh of empty ranges, and value-size boundaries. Real loopback UDP tests cover multi-peer lookups and a maximum-sized value round trip. These checks cover the exercised execution paths; a clean race-detector run is not a proof of all possible interleavings.
+The analyzer calculates one mean or success rate per seed, then reports the mean and sample standard deviation across ten seeds. Tables and error bars show mean ± one standard deviation, not a confidence interval. The variance is the square of that standard deviation. These measure variation between runs rather than variation between individual lookups.
 
-A three-node end-to-end check was also run using local processes and then Docker containers. Node A stored a file; B joined through the bootstrap address and fetched the bytes from A. Node C joined later and received the value through B's periodic replication without issuing a GET. After both A and B exited, C still returned the same bytes from its local replica. The Docker image builds with Go 1.22. The updated Swarm configuration was validated, but this Sprint 2 check did not deploy a 50-node Swarm.
+The simulator supports configurable latency, per-leg packet loss and retries. These mandatory runs use virtual delivery without injected delays, no churn during measurement, and no periodic maintenance workers; replication/refresh intervals therefore do not affect them. Requests and replies can be lost independently. Simulated retries model delivery attempts without waiting for the real transport’s timeout. Round counts are a rough latency proxy, not measured wall-clock time. Seeds fix random inputs but not every concurrent scheduling decision.
 
-The October 11 local audit could not repeat container checks because the local Docker daemon was stopped. Its earlier container observations are historical results, separate from Kim's subsequent rerun of the integrated registry build.
+### 7.2 Experiment 1: lookup scalability
 
-## Experimental evaluation
-
-The committed [results and tables](labs/experiments/results/summary.md) were generated with `go run ./cmd/experiments -out experiments/results`, followed by `python3 scripts/analyze.py experiments/results`, from `labs/`. The runner defaults to seeds 1 through 10. It hashes distinct random IP:port pairs into node IDs, grows each network using normal joins through randomly selected earlier nodes, and stores random values of 16–256 bytes from random publishers. A separate seeded generator selects measurement inputs. Setup lookups are excluded by enabling the shared lookup logger only after joining and storing values. Readers are selected from nodes that do not already hold the requested key, so initial local cache hits do not hide network work.
-
-Measurements come from `lookup_probe` and `lookup_complete` events emitted by the core. Node lookups are also checked against the closest node computed from all simulated IDs, excluding the initiating node. A probe counts a logical RPC, not its retransmissions; a round counts one batch of at most alpha probes. The script computes per-run means and then reports their mean and standard deviation across seeds. These are network-operation measurements, not measured wall-clock latency. The simulator defaults to virtual latency, and the mandatory runs do not inject real delays. Each request and response leg can be lost independently; retries repeat an attempt. The real UDP transport defaults to a 500 ms timeout and two retries, while the simulated experiments model packet delivery and retry count without waiting for timeout durations.
-
-### Scalability
-
-For each of eight network sizes from 16 to 2048, ten seeds produce 50 random node lookups and 50 remote value lookups per seed, with `k=10`, `alpha=3`, and no packet loss. Kademlia's progressive reduction of XOR distance leads us to expect approximately logarithmic growth. Logical probes are not identical to sequential hops: parallelism and the final search of the k closest candidates add overhead, particularly in small networks.
+Question: how does lookup work grow with network size? For N = 16, 32, 64, 128, 256, 512, 1024 and 2048, each of ten seeds measures 50 node and 50 remote value lookups, with k = 10, α = 3 and no loss: 8000 lookups in total. Kademlia’s progressive reduction in XOR distance suggests approximately logarithmic growth, while probing several close candidates adds work beyond a single chain of sequential hops.
 
 ![Lookup probes by network size](labs/experiments/results/scalability.svg)
 
-The recorded node-lookup mean increases from 10.0 probes at 16 nodes to 14.2 at 2048; value lookups increase from 3.0 to 6.6. The fitted slopes are 0.65 and 0.55 probes per doubling of N, with R² values of 0.971 and 0.967. Node lookups have a visible floor near k=10 at small N because the algorithm queries its closest candidates before terminating. Value lookups can stop after their first successful batch. All 8000 recorded lookups succeeded, and node lookups found the true closest node in every recorded run. These observations are consistent with logarithmic growth over the tested range, but do not establish behavior for arbitrary network sizes or topologies.
+*Figure 1. Mean logical probes versus network size. Error bars show ±1 standard deviation across ten seeds; dashed lines are least-squares fits against log₂(N).*
 
-### Packet-loss reliability
+*Table 2. Logical probes (mean ± standard deviation) and mean rounds per lookup.*
 
-For 500-node networks with `k=10`, each seed stores 20 random values before loss is enabled and measures 100 value lookups. The sweep covers per-leg loss probabilities 0%, 5%, 10%, 20%, 30%, 40%, and 50%, comparing alpha 1 and 3 with either zero or two retries. Ten seeds per configuration give 28000 lookups overall. Every variant builds and fills its network without loss before applying the measurement settings. Successful lookups add cached replicas, so this experiment measures sequential queries on an evolving cache rather than a permanently fixed replica count.
+| Nodes N | Node probes mean ± SD | Value probes mean ± SD | Node rounds | Value rounds |
+| --- | --- | --- | --- | --- |
+| 16 | 10.0 ± 0.0 | 3.0 ± 0.0 | 4.00 | 1.00 |
+| 32 | 10.0 ± 0.0 | 3.0 ± 0.0 | 4.00 | 1.00 |
+| 64 | 10.5 ± 0.1 | 3.3 ± 0.1 | 4.12 | 1.11 |
+| 128 | 11.1 ± 0.1 | 4.0 ± 0.2 | 4.26 | 1.32 |
+| 256 | 12.0 ± 0.3 | 4.6 ± 0.2 | 4.50 | 1.54 |
+| 512 | 12.9 ± 0.2 | 5.3 ± 0.3 | 4.78 | 1.76 |
+| 1024 | 13.4 ± 0.3 | 5.9 ± 0.4 | 4.92 | 1.97 |
+| 2048 | 14.2 ± 0.3 | 6.6 ± 0.2 | 5.17 | 2.20 |
+
+Node-lookup probes grow from 10.0 to 14.2, while value-lookup probes grow from 3.0 to 6.6. Fitted growth is 0.65 and 0.55 probes per doubling of N, with R² = 0.971 and 0.967 respectively. Node lookups show a floor near k = 10 because termination queries the closest candidates; value lookup can stop after its first successful batch. All 8000 lookups succeeded, and every recorded node lookup found the true closest node. The results are consistent with logarithmic growth over this range, without establishing behavior for arbitrary topologies or network sizes.
+
+![Lookup rounds by network size](labs/experiments/results/scalability_rounds.svg)
+
+*Figure 2. Mean lookup rounds versus network size, with ±1 standard deviation across ten seeds. One round contains up to α parallel probes; it is not a measured wall-clock duration.*
+
+Mean node-lookup rounds grow from 4.00 at 16 nodes to 5.17 at 2048; value-lookup rounds grow from 1.00 to 2.20. Comparing Figures 1 and 2 separates total RPC work from sequential batches. Parallel requests may reduce rounds without reducing total probes.
+
+### 7.3 Experiment 2: lookup reliability under packet loss
+
+Question: how does packet loss affect retrieval success? Each 500-node network stores 20 random values before loss is enabled, then measures 100 value lookups. The sweep uses seven per-leg loss rates from 0% to 50%, α = 1 or 3, and zero or two retries. Ten seeds per configuration yield 28,000 lookups. All variants initialize without loss before applying their measurement settings. Successful retrievals add immutable cached copies, so these are sequential queries on an evolving cache.
+
+With independent per-leg loss p, a single request/reply attempt completes with probability (1 − p)². With two retries, at least one of three attempts completes with probability 1 − [1 − (1 − p)²]³. Replicas and alternative contacts provide further chances to find data. We therefore expect success to fall as loss rises, and retries to improve reliability; this calculation is an RPC expectation, not a complete lookup model. The dashed reference curves in Figure 3 use `1 − (1 − q)^k`, where `q` is the probability that an RPC completes with the selected retry count. This simplified model assumes all k replicas can be contacted directly and independently. Actual lookups must first discover reachable replicas and evolve their caches, so the model is neither a fitted prediction nor a guaranteed bound.
 
 ![Lookup success under packet loss](labs/experiments/results/reliability.svg)
 
-With independent per-leg loss p, one RPC attempt has delivery probability `(1-p)^2`; allowing two retries raises the chance that at least one attempt completes to `1-(1-(1-p)^2)^3`. Lookup success also benefits from alternative contacts and replicated values, so we expect higher reliability than a single-attempt exchange and a clear benefit from retries as loss grows. At 50% loss, the recorded success rates are 99.7% ± 0.5 percentage points for alpha 3 with retries and 99.9% ± 0.3 for alpha 1 with retries, versus 83.7% ± 3.7 and 84.5% ± 2.6 without retries. The small alpha differences do not establish that one setting is more reliable. Alpha 3 issues more logical probes at low loss because the full parallel batch completes even when one response already has the value. Round counts and logical probes should therefore be interpreted separately; neither includes retransmissions or timeout latency.
+*Figure 3. Value-lookup success under independent request/reply loss. Points are means over ten seeds, bars show ±1 standard deviation, and dashed curves show the simplified replica-failure model. The vertical axis starts at 70%.*
 
-The results use independent packet loss after healthy setup, no churn during these two experiments, and small in-memory values. Correlated loss, lossy joins, real timeout delays, fragmentation, and larger packages may behave differently. Churn is exercised separately by the 1000-node test, including loss of 10% of its nodes. The committed figures are the team's full experimental results; the later integration checks ran the test suite and a small experiment/analysis smoke test, rather than regenerating the full sweep.
+*Table 3. Success rate (%) ± standard deviation in percentage points across ten seeds.*
 
-## Limitations and possible improvements
+| Per-leg loss | α = 3, 2 retries | α = 1, 2 retries | α = 3, 0 retries | α = 1, 0 retries |
+| --- | --- | --- | --- | --- |
+| 0% | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 |
+| 5% | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 |
+| 10% | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 |
+| 20% | 100.0 ± 0.0 | 100.0 ± 0.0 | 100.0 ± 0.0 | 99.9 ± 0.3 |
+| 30% | 100.0 ± 0.0 | 100.0 ± 0.0 | 99.7 ± 0.7 | 99.8 ± 0.4 |
+| 40% | 100.0 ± 0.0 | 100.0 ± 0.0 | 97.1 ± 1.4 | 95.2 ± 1.8 |
+| 50% | 99.7 ± 0.5 | 99.9 ± 0.3 | 83.7 ± 3.7 | 84.5 ± 2.6 |
 
-- Lookup rounds wait for the slowest RPC in the batch. Alpha is a per-lookup limit, not a node-wide limit. Parallelism does not itself guarantee fewer total probes; the experiments must compare probe counts separately from rounds and latency.
-- Simulated delivery is seeded, but concurrent probe completion can influence routing-table and cache evolution; seeds do not fix every goroutine interleaving. Virtual round counts are a latency proxy, not measured real-network latency.
-- Values are kept in memory. Replication helps only while at least one copy survives; stopping all nodes loses the data. Disk persistence is optional in the lab specification.
-- Values travel inside single JSON-encoded UDP datagrams and are limited to **4096 bytes (4 KiB)**. Base64 expands that to 5464 characters plus metadata. This conservative limit exceeds the required 255-byte minimum and accommodates the development Mac's smaller UDP send limit: a proposed 32 KiB value failed a real loopback test with `message too long`. The wire encoder also checks the 65,507-byte IPv4 payload ceiling. Fragmentation/loss remains possible. Larger values need chunking or a TCP data plane.
-- Idle refresh can perform up to 256 lookups in a scan; scans are sequential and an unresponsive network can delay the next pass or shutdown until the current lookup finishes.
-- Mutable read caching is disabled, but an actual STORE replica that misses a publication can still serve an old accepted pointer. The fix is not a globally freshest-head guarantee. Replication is per destination and can partially succeed; a multi-node publication is not a transaction.
-- A non-replica reader does not retain a mutable history checkpoint between reads. Nodes without an accepted pointer verify the complete supplied chain but cannot detect a prior fork that they never learned. Nodes with stored history reject updates that do not extend it. There is no global consensus mechanism to reconcile two independently accepted histories.
-- `LookupData` can return `ErrValueNotFound` after exhausted or unresponsive peers, so callers cannot always distinguish absence from network failure. A long history catch-up runs inside the UDP STORE handler and may exceed the sender's deadline. A larger `RPC_TIMEOUT` can mitigate this at the cost of longer waits for unreachable peers; it does not bound arbitrary history traversal or make publication atomic. In Kim's rebuilt 50-container run, two of eight publications reported a timeout at 500 ms and zero of eight did at 2 s. Both timed-out publications appeared in the history subsequently read by a fresh node. This demonstrates an uncertain outcome at the publisher; it does not prove that every replica eventually accepted the write or establish the exact cause of the delay.
+At 50% per-leg loss, α = 3 with two retries achieves 99.7% ± 0.5 percentage points, compared with 83.7% ± 3.7 without retries. The corresponding α = 1 results are 99.9% ± 0.3 and 84.5% ± 2.6. Differences between α settings are small relative to the observed spread and do not establish that either is more reliable.
 
-Run instructions and an explanation of the data flow are in [labs/RUNNING.md](labs/RUNNING.md).
+Parallelism also changes the amount of work. At zero loss with two retries, α = 3 averages 5.1 logical probes over 1.7 rounds, versus 1.8 probes over 1.8 rounds for α = 1. At 50% loss those figures are 6.2/2.1 and 3.4/3.4. A complete parallel batch runs even when one response already has the value, increasing probes while potentially reducing sequential rounds. Neither metric counts retransmissions or real timeout delays.
 
-## Sprint 1 plan / reflection
+The main limits are independent loss after healthy setup, small in-memory values and evolving caches. Correlated loss, lossy joins, concurrent churn, real timeout delays and larger packages could change the outcome. Churn is tested separately by the 1000-node scenario. The full committed sweep was retained for this report; the final integration checks do not constitute a rerun of all measurements.
 
-This sprint focused on the two most foundational, highest-risk pieces in parallel: containerization (to demonstrate node communication) and the core lookup algorithm (since everything else depends on it). Work was split across separate branches per person to avoid merge conflicts, coordinated around a shared `RPCClient` interface contract agreed on up front. Next sprint's focus: finish the UDP network layer, integrate all pieces end-to-end, and begin Part 2.
+## 8. Work beyond the minimum requirements
+
+We added `join IP:PORT` to attach a running node without restarting it, `keygen DOMAIN` to prepare demonstration credentials, and an optional install output filename. These additions make ownership and multi-node scenarios easier to demonstrate.
+
+Beyond the two required experiment questions, we compare α and retry policies. At 50% loss without retries, α = 3 uses 4.0 rounds rather than 9.9 for α = 1, while using 11.7 rather than 9.9 logical probes: about 2.5 times fewer rounds for 1.2 times as many probes. The observed success-rate differences do not establish a reliability advantage for either α. Instrumentation also records elapsed time, cache hits and exact-target discovery. Our separate container deadline comparison investigates publication acknowledgements and partial outcomes.
+
+We implemented an injectable real DNS TXT resolver in addition to the allowed static owner table, enabling offline tests and future live-DNS use. Strict canonical decoding, bounded history walks, configurable RPC deadlines and targeted concurrent-update/late-acknowledgement regressions add robustness. Seeded multi-run experiments, the simulator, 1000-node tests and operation under churn are engineering requirements; we do not count them as optional extensions.
+
+## 9. Limitations and possible improvements
+
+- Persistence and size: stores are in memory; loss of every copy loses the data. Disk persistence would improve restart recovery. The 4 KiB value limit constrains real packages. Chunking or a separate TCP data plane would support larger files and reduce reliance on fragmented UDP datagrams.
+- Freshness and consistency: a replica that misses an update may serve its old accepted pointer. A new node cannot detect a fork predating its first contact, and a non-replica reader keeps no mutable history checkpoint. Independent accepted histories are not reconciled by consensus. Explicit consistency rules and retained trust checkpoints would be needed for stronger guarantees.
+- Publication outcomes: writes can partially succeed, and a timeout does not distinguish rejection from late completion. `LookupData` also cannot always distinguish an absent value from exhausted or unreachable peers. Better outcome reporting, bounded asynchronous validation and explicit retry/recovery rules would improve operability.
+- **Ownership and history:** there is no key rotation. Every record is checked against the domain's current public key, so replacing it invalidates signatures made with the previous key. Key transitions and authenticated history checkpoints would need further design.
+- **Owner-source availability:** there is no registry-level cache of DNS owner keys. Each validation queries its owner source; `DNSOwners` uses a 5 s timeout by default. The local file provider does cache the parsed table and reloads it when the file changes. Live DNS deployment and its trust configuration were not evaluated in the container demonstration.
+- **Single-host fake DNS:** the named volume containing the owners file is shared on one Docker host, not a cross-host filesystem. It assumes trusted administration and is suitable for our single-host demonstration. A multi-host deployment needs real DNS or another shared ownership service.
+- **History and version limits:** a walk can inspect at most 1000 records by default. Validation or catch-up that requires a longer walk rejects the pointer; a node with a recent accepted head may stop at that checkpoint. Numeric version gaps are allowed, but prerelease labels and the semantic meaning of version bumps are not implemented.
+- Concurrency and load: lookups wait for the slowest RPC in a round, and α limits one lookup rather than all requests at a node. A refresh scan can initiate up to 256 sequential lookups, delaying later passes or shutdown. Resource limits, better scheduling and bounded request cancellation would help under sustained load.
+- Evaluation scope: the container run was on one host, and the simulator omits real timeout delays in the mandatory experiments. Experiments with multiple hosts, correlated loss, lossy joins and controlled churn would give stronger deployment evidence.
+
+## 10. Reproduction and sources
+
+Run the automated checks from `labs/`. The coverage command measures all packages together, avoiding averages of separate package percentages:
+
+```sh
+go test -race -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+go vet ./...
+go build -o /tmp/kadlab .
+```
+
+To reproduce the complete experimental sweep and analysis from `labs/`:
+
+```sh
+go run ./cmd/experiments -out experiments/results
+python3 scripts/analyze.py experiments/results
+```
+
+For the single-host container deployment, initialize Docker Swarm if necessary, then build and deploy from `labs/`. The scale command gives one bootstrap plus 49 workers. `RPC_TIMEOUT=2s` is the setting supported by the short registry comparison:
+
+```sh
+docker build -t kadlab:latest .
+RPC_TIMEOUT=2s docker stack deploy --resolve-image never -c docker-compose.yml kademlia
+docker service scale kademlia_kademliaNodes=49
+```
+
+Interactive demonstration nodes must join `kademlia_kademlia_network`, mount `kademlia_registry_shared` at `/shared`, set `OWNERS_FILE=/shared/owners.json`, use their own `KEYS_DIR`, set `BOOTSTRAP=bootstrap:8000`, and set `RPC_TIMEOUT=2s` for the publisher comparison. The publisher must retain its private key between releases. Detailed commands and configuration are in the [running guide](labs/RUNNING.md).
+
+The report draws on the [lab specification](labs/LAB-SPEC.md), [Part 2 design](labs/PART2-DESIGN.md), [source code](labs/), [experimental summary and datasets](labs/experiments/results/summary.md), and our team implementation and verification notes dated 11–12 October 2026. The notes supply the integrated container observations; the committed datasets supply the experiment figures and tables.
