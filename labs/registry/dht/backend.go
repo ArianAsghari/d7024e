@@ -100,12 +100,17 @@ func (f *storeFailure) Error() string { return f.msg }
 func (f *storeFailure) Unwrap() error { return f.err }
 
 func summarize(err error) error {
-	var leaves []error
-	flatten(err, &leaves)
+	destinations := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		// StoreAt joins one error per failed destination. A destination's
+		// error may itself wrap several causes; preserve its complete reason
+		// rather than counting those causes as separate rejecting nodes.
+		destinations = joined.Unwrap()
+	}
 	counts := map[string]int{}
 	var order []string
-	for _, leaf := range leaves {
-		reason := storePrefix.ReplaceAllString(strings.TrimSpace(leaf.Error()), "")
+	for _, destination := range destinations {
+		reason := storePrefix.ReplaceAllString(strings.TrimSpace(destination.Error()), "")
 		reason = strings.Join(strings.Fields(reason), " ")
 		if counts[reason] == 0 {
 			order = append(order, reason)
@@ -120,14 +125,4 @@ func summarize(err error) error {
 		parts = append(parts, reason)
 	}
 	return &storeFailure{msg: strings.Join(parts, "; "), err: err}
-}
-
-func flatten(err error, out *[]error) {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, inner := range joined.Unwrap() {
-			flatten(inner, out)
-		}
-		return
-	}
-	*out = append(*out, err)
 }

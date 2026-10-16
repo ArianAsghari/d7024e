@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Terminal</title>
+<style>
+* { box-sizing: border-box; }
+html { background: #000; }
+body { margin: 0; padding: 16px; background: #000; color: #eee; }
+.terminal { overflow: hidden; border: 1px solid #484848; border-radius: 10px; background: #000; }
+.titlebar { position: relative; height: 40px; border-bottom: 1px solid #111; background: #2c2c2c; color: #d7d7d7; text-align: center; font: 600 13px/39px -apple-system, BlinkMacSystemFont, Arial, sans-serif; }
+.controls { position: absolute; top: 13px; left: 15px; display: flex; gap: 8px; }
+.control { display: block; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+.close { background: #ff5f57; }
+.minimize { background: #febc2e; }
+.zoom { background: #28c840; }
+.output { padding: 26px 28px; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 20px/1.55 Menlo, Monaco, monospace; font-variant-ligatures: none; }
+.command { color: #a7e3a1; }
+</style>
+<body>
+<div class="terminal">
+<div class="titlebar"><div class="controls" aria-hidden="true"><span class="control close"></span><span class="control minimize"></span><span class="control zoom"></span></div>Terminal</div>
+<div class="output"><pre><span class="command">replica-1&gt; publish example.com:tool:3.0.0 v4.txt
+</span>publish failed: no private key for example.com in /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/kademlia-force-xfo_hhov/keys-replica-1 (create one with: keygen example.com): open /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/kademlia-force-xfo_hhov/keys-replica-1/example.com: no such file or directory
+<span class="command">replica-1&gt; publish --force example.com:tool:3.0.0 v4.txt
+</span>publish failed: updating the latest pointer: signer is not the domain owner: bad signature: latest pointer is not signed by the owner of example.com (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+
+<span class="command">replica-1&gt; install example.com:tool:latest replica-1-installed.txt
+</span>installed example.com:tool 2.0.0 (35 bytes, package e598bc26…d1cd, latest) to replica-1-installed.txt
+<span class="command">replica-1&gt; show example.com:tool
+</span>example.com:tool has 2 versions (newest first)
+  2.0.0  record 7780aea5…65d0  blob e598bc26…d1cd  (latest)
+  1.0.0  record 853a0d3c…0209  blob 645dbf12…03c5
+</pre></div>
+</div>
+</body>
+</html>

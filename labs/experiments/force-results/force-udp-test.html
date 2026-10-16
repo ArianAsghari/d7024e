@@ -20,27 +20,36 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 20px/1.55
 <body>
 <div class="terminal">
 <div class="titlebar"><div class="controls" aria-hidden="true"><span class="control close"></span><span class="control minimize"></span><span class="control zoom"></span></div>Terminal</div>
-<div class="output"><pre><span class="command">$ go test . -run &#x27;^TestPublishForceOverUDP$&#x27; -race -count=1 -v
+<div class="output"><pre><span class="command">$ go test . -run &#x27;^TestPublishForce(OverUDP|WithoutDomainKeyOverUDP)$&#x27; -race -count=1 -v
 </span>=== RUN   TestPublishForceOverUDP
 === RUN   TestPublishForceOverUDP/rollback
-    registry_cli_test.go:456: publish --force example.com:tool:1.5.0 invalid.bin
+    registry_cli_test.go:472: publish --force example.com:tool:1.5.0 invalid.bin
         publish failed: updating the latest pointer: update would roll back to an older version: 1.5.0 is older than the current 2.0.0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
 === RUN   TestPublishForceOverUDP/same-version_fork
-    registry_cli_test.go:456: publish --force example.com:tool:2.0.0 invalid.bin
-        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record b3f0eefc…5e49, not 597c7e0b…16af (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+    registry_cli_test.go:472: publish --force example.com:tool:2.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record 1be27d1b…ee8f, not 27f58f55…8436 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
 === RUN   TestPublishForceOverUDP/older-parent_fork
-    registry_cli_test.go:456: publish --force --prev=1.0.0 example.com:tool:3.0.0 invalid.bin
-        publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record f9e7108f…04b7) without meeting the current record b3f0eefc…5e49 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+    registry_cli_test.go:472: publish --force --prev=1.0.0 example.com:tool:3.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record f079bbb4…0070) without meeting the current record 1be27d1b…ee8f (refused by 3 nodes); any replicas that accepted the latest pointer keep it
 === RUN   TestPublishForceOverUDP/same-version_predecessor
-    registry_cli_test.go:456: publish --force --prev=2.0.0 example.com:tool:2.0.0 invalid.bin
-        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record b3f0eefc…5e49, not 4a020150…da84 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
---- PASS: TestPublishForceOverUDP (0.10s)
-    --- PASS: TestPublishForceOverUDP/rollback (0.01s)
-    --- PASS: TestPublishForceOverUDP/same-version_fork (0.01s)
-    --- PASS: TestPublishForceOverUDP/older-parent_fork (0.01s)
-    --- PASS: TestPublishForceOverUDP/same-version_predecessor (0.01s)
+    registry_cli_test.go:472: publish --force --prev=2.0.0 example.com:tool:2.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record 1be27d1b…ee8f, not c66833ce…6e78 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+--- PASS: TestPublishForceOverUDP (0.12s)
+    --- PASS: TestPublishForceOverUDP/rollback (0.02s)
+    --- PASS: TestPublishForceOverUDP/same-version_fork (0.02s)
+    --- PASS: TestPublishForceOverUDP/older-parent_fork (0.02s)
+    --- PASS: TestPublishForceOverUDP/same-version_predecessor (0.03s)
+=== RUN   TestPublishForceWithoutDomainKeyOverUDP
+    registry_cli_test.go:532: publish example.com:tool:3.0.0 third.bin
+        publish failed: no private key for example.com in /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/TestPublishForceWithoutDomainKeyOverUDP2922793259/001/node-c-keys (create one with: keygen example.com): open /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/TestPublishForceWithoutDomainKeyOverUDP2922793259/001/node-c-keys/example.com: no such file or directory
+    registry_cli_test.go:545: publish --force example.com:tool:3.0.0 third.bin
+        publish failed: updating the latest pointer: signer is not the domain owner: bad signature: latest pointer is not signed by the owner of example.com (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+    registry_cli_test.go:576: install example.com:tool:latest verified.bin
+        installed example.com:tool 2.0.0 (14 bytes, package 381aaaa3…c2b6, latest) to verified.bin
+    registry_cli_test.go:590: all 3 replicas retain version 2.0.0; domain ownership and keys are unchanged
+--- PASS: TestPublishForceWithoutDomainKeyOverUDP (0.07s)
 PASS
-ok  	d7024e	1.652s
+ok  	d7024e	1.673s
 </pre></div>
 </div>
 </body>

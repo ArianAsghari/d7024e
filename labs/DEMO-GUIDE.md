@@ -506,23 +506,11 @@ install example.com:intrusion:latest blocked.txt
 
 B reports no private key for `example.com`. C cannot find the attempted package, and installation fails. This uses a different package name, `intrusion`, so it is easy to demonstrate that it was never successfully published.
 
-This particular attempt stops in the CLI before any upload. That is different from receiving and rejecting an actual signature from the wrong key. Both protections exist; the optional exercise below shows receiver enforcement too.
+This particular attempt stops in the CLI before any upload. Use `--force` next to send an actual signed attempt to the receiving nodes.
 
 Do not try to solve the deliberate failure by registering A's domain again on B. Sharing the owner's private key would defeat the setup we want to demonstrate.
 
-### Optional: send an actual wrong-key signature to receivers
-
-At B:
-
-```text
-keygen intruder.example
-```
-
-In S, copy this unrelated demonstration key within B's disposable practice directory, using the filename its CLI expects:
-
-```sh
-cp -n "$demo_dir/b/keys/intruder.example" "$demo_dir/b/keys/example.com"
-```
+### Send an actual wrong-key signature to receivers
 
 At B:
 
@@ -537,11 +525,11 @@ show dns example.com
 show example.com:intrusion
 ```
 
-The owner mapping remains A's public key. Receivers reject the wrong signature, and the package is still absent. The copy only supplies B with an unrelated signing key; it does not make that key the trusted owner. This changes only disposable demo credentials and does not affect A's key or later publications from A.
+With `--force`, B generates a temporary signing key in memory because it has no key for `example.com`. It uploads a signed proposal, which the receivers reject with `signer is not the domain owner` and `refused by N nodes`. The owner mapping remains A's public key, no new private key is saved, and the package is still absent. A's key and later publications are unaffected.
 
 **Code:** [CLI private-key loading](registry_cli.go), [owner and signature checks](registry/validate.go).
 
-**Check P9:** What is the difference between the first missing-key failure and the optional wrong-signature failure?
+**Check P9:** What is the difference between the first missing-key failure and the forced wrong-signature failure?
 
 ## 12. Part 2: reject replacement of an existing version
 

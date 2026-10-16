@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -375,11 +376,9 @@ func TestPublishRejectsInvalidUpdates(t *testing.T) {
 	}
 }
 
-// Exercise the same command path as the demo with real UDP RPCs. Simulated
-// transports return Go errors directly; UDP must also carry replica refusals
-// back to the publisher without making --force bypass receiver validation.
-func TestPublishForceOverUDP(t *testing.T) {
-	e := newCLIEnv(t, 3)
+func newCLIUDPEnv(t *testing.T, nodes int) *cliEnv {
+	t.Helper()
+	e := newCLIEnv(t, nodes)
 	contacts := make([]kademlia.Contact, len(e.nodes))
 	tables := make([]*kademlia.RoutingTable, len(e.nodes))
 	for i := range e.nodes {
@@ -407,6 +406,23 @@ func TestPublishForceOverUDP(t *testing.T) {
 			}
 		}
 	}
+	return e
+}
+
+func storedCLIValue(node *kademlia.Kademlia, key string) []byte {
+	for _, entry := range node.Entries() {
+		if entry.Key == key {
+			return entry.Value
+		}
+	}
+	return nil
+}
+
+// Exercise the same command path as the demo with real UDP RPCs. Simulated
+// transports return Go errors directly; UDP must also carry replica refusals
+// back to the publisher without making --force bypass receiver validation.
+func TestPublishForceOverUDP(t *testing.T) {
+	e := newCLIUDPEnv(t, 3)
 	e.expect(0, "keygen example.com", "created private key")
 	e.write("first.bin", "first release")
 	e.write("second.bin", "second release")
@@ -467,6 +483,151 @@ func TestPublishForceOverUDP(t *testing.T) {
 	e.expect(2, "install example.com:tool:latest verified.bin", "2.0.0")
 	if got := e.read("verified.bin"); got != "second release" {
 		t.Fatalf("latest package after forced attempts = %q", got)
+	}
+}
+
+func TestPublishForceWithoutDomainKeyOverUDP(t *testing.T) {
+	e := newCLIUDPEnv(t, 3)
+	e.expect(0, "keygen example.com", "created private key")
+	e.write("first.bin", "first release")
+	e.write("second.bin", "second release")
+	e.write("third.bin", "unauthorized release")
+	e.expect(0, "publish example.com:tool:1.0.0 first.bin", "published")
+	e.expect(0, "publish example.com:tool:2.0.0 second.bin", "published")
+
+	ownerKeyPath := filepath.Join(e.keysDir, "example.com")
+	ownerKeyBefore, err := os.ReadFile(ownerKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownersBefore, err := os.ReadFile(e.ownersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPub, err := (&fileOwners{path: e.ownersPath}).PublicKey("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointerKey := registry.PointerKey("example.com", "tool")
+	before := make([][]byte, len(e.nodes))
+	for i, node := range e.nodes {
+		before[i] = storedCLIValue(node, pointerKey)
+		if before[i] == nil {
+			t.Fatalf("UDP replica %d did not receive the valid latest pointer", i)
+		}
+	}
+
+	// Reproduce node C: it can read domain ownership, but has its own empty
+	// private-key directory, rather than the publisher's domain key.
+	keylessDir := filepath.Join(e.dir, "node-c-keys")
+	if err := os.Mkdir(keylessDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEYS_DIR", keylessDir)
+	if _, err := loadDomainKey("example.com"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing domain key must preserve fs.ErrNotExist: %v", err)
+	}
+	command := "publish example.com:tool:3.0.0 third.bin"
+	out := e.expect(2, command, "publish failed: no private key for example.com")
+	t.Logf("%s\n%s", command, strings.TrimSpace(out))
+	blobHash := registry.Hash([]byte("unauthorized release"))
+	for i, node := range e.nodes {
+		if storedCLIValue(node, blobHash) != nil {
+			t.Fatalf("UDP replica %d received a package from a locally refused keyless publication", i)
+		}
+	}
+
+	command = "publish --force example.com:tool:3.0.0 third.bin"
+	out = e.expect(2, command, "updating the latest pointer")
+	if !strings.Contains(out, "refused by 3 nodes") || !strings.Contains(out, "not signed by the owner of example.com") || strings.Contains(out, "refusing to publish") {
+		t.Fatalf("keyless forced publication did not reach receiver validation: %q", out)
+	}
+	t.Logf("%s\n%s", command, strings.TrimSpace(out))
+	var uploadedRecord []byte
+	for i, node := range e.nodes {
+		if !bytes.Equal(storedCLIValue(node, blobHash), []byte("unauthorized release")) {
+			t.Fatalf("UDP replica %d did not receive the forced package", i)
+		}
+		records := 0
+		for _, entry := range node.Entries() {
+			rec, err := registry.DecodeVersionRecord(entry.Value)
+			if err != nil || rec.Version.String() != "3.0.0" {
+				continue
+			}
+			records++
+			if rec.BlobHash != blobHash || rec.Verify(ownerPub) == nil {
+				t.Fatalf("UDP replica %d did not receive a record signed by a non-owner", i)
+			}
+			if uploadedRecord == nil {
+				uploadedRecord = entry.Value
+			} else if !bytes.Equal(uploadedRecord, entry.Value) {
+				t.Fatalf("UDP replica %d received a different publication record", i)
+			}
+		}
+		if records != 1 {
+			t.Fatalf("UDP replica %d holds %d forced records, want 1", i, records)
+		}
+		if !bytes.Equal(storedCLIValue(node, pointerKey), before[i]) {
+			t.Fatalf("UDP replica %d changed its accepted latest pointer", i)
+		}
+	}
+	command = "install example.com:tool:latest verified.bin"
+	out = e.expect(2, command, "installed example.com:tool 2.0.0")
+	t.Logf("%s\n%s", command, strings.TrimSpace(out))
+	if got := e.read("verified.bin"); got != "second release" {
+		t.Fatalf("latest package after keyless force = %q", got)
+	}
+	for path, want := range map[string][]byte{e.ownersPath: ownersBefore, ownerKeyPath: ownerKeyBefore} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("publication changed domain ownership or its persisted key at %s: %v", path, err)
+		}
+	}
+	entries, err := os.ReadDir(keylessDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("temporary signer was persisted: %v, %v", entries, err)
+	}
+	t.Log("all 3 replicas retain version 2.0.0; domain ownership and keys are unchanged")
+}
+
+func TestPublishForceDoesNotBypassKeyFileErrors(t *testing.T) {
+	for _, name := range []string{"malformed key", "key is a directory", "key directory is a file"} {
+		t.Run(name, func(t *testing.T) {
+			e := newCLIEnv(t, 3)
+			e.write("package.bin", "must not be uploaded")
+			if name == "key directory is a file" {
+				if err := os.WriteFile(e.keysDir, []byte("blocked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.Mkdir(e.keysDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(e.keysDir, "example.com")
+				var err error
+				if name == "malformed key" {
+					err = os.WriteFile(path, []byte("not a base64 key!"), 0o600)
+				} else {
+					err = os.Mkdir(path, 0o700)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, keyErr := loadDomainKey("example.com")
+			if keyErr == nil || errors.Is(keyErr, fs.ErrNotExist) {
+				t.Fatalf("expected an existing key/path error, got %v", keyErr)
+			}
+			out := e.run(0, "publish --force example.com:tool:1.0.0 package.bin")
+			if !strings.Contains(out, "publish failed: "+oneLine(keyErr)) || strings.Contains(out, "updating the latest pointer") {
+				t.Fatalf("force bypassed the key file error: %q", out)
+			}
+			for i, node := range e.nodes {
+				if len(node.Entries()) != 0 {
+					t.Fatalf("node %d received data despite the key file error", i)
+				}
+			}
+		})
 	}
 }
 

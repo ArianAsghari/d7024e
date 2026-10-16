@@ -4,7 +4,7 @@
 
 **Repository:** [ArianAsghari/d7024e](https://github.com/ArianAsghari/d7024e)
 
-**Revision:** 16 October 2026; working tree based on `3488962`. Section 6.2 retains the earlier `e98c92d` container results.
+**Revision:** 16 October 2026; working tree based on `7387e3c`. Section 6.2 retains the earlier `e98c92d` container results; Section 7.4 uses the retained churn dataset.
 
 ## Summary
 
@@ -160,11 +160,13 @@ Publication consists of independent writes, not one transaction. A replica that 
 
 ### 3.4 Verified `--force` behavior
 
-The [lab specification](labs/LAB-SPEC.md) requires `--force` to bypass the publisher's proposed-update check. [`Client.Publish`](labs/registry/client.go) then uploads the immutable package and signed version record and attempts the latest-pointer STORE. **Receiving nodes still validate the update:** an invalid forced publication must reach the replicas and be rejected there. Syntax, file limits and signing-key requirements still apply. An explicit `--prev=VERSION` must identify an existing record whose hash can be included in the signed release.
+The [lab specification](labs/LAB-SPEC.md) requires `--force` to bypass the publisher's proposed-update check. [`Client.Publish`](labs/registry/client.go) then uploads the immutable package and signed version record and attempts the latest-pointer STORE. **Receiving nodes still validate the update:** an invalid forced publication must reach the replicas and be rejected there. Syntax and file limits still apply. An explicit `--prev=VERSION` must identify an existing record whose hash can be included in the signed release.
+
+Ordinary publication requires a saved private key for the domain. If that key file is absent, `publish --force` instead generates a temporary Ed25519 key for that attempt. The key is neither saved nor registered as the domain owner. This allows a keyless node to submit a signed but unauthorized proposal so the receiving nodes demonstrate ownership rejection. An existing malformed or unreadable key still causes a local error. A valid forced update signed with the owner's key can still succeed.
 
 #### Publication checks
 
-The UDP regression, [`TestPublishForceOverUDP`](labs/registry_cli_test.go), first publishes `1.0.0` with `--force`, then `2.0.0` with `--force --prev=1.0.0`. Both valid updates succeed. It then attempts the following invalid updates with different package contents:
+The UDP regressions in [`registry_cli_test.go`](labs/registry_cli_test.go) cover both cases. `TestPublishForceOverUDP` first publishes `1.0.0` with `--force`, then `2.0.0` with `--force --prev=1.0.0`; both valid updates succeed before rollback and fork attempts are made. `TestPublishForceWithoutDomainKeyOverUDP` gives another node a separate empty key directory and attempts an unauthorized `3.0.0` publication against the accepted `2.0.0` head:
 
 | Attempt after accepting `2.0.0` | Without `--force` | With `--force` |
 | --- | --- | --- |
@@ -172,43 +174,49 @@ The UDP regression, [`TestPublishForceOverUDP`](labs/registry_cli_test.go), firs
 | Publish `2.0.0` with different contents | Local fork refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas as a same-version fork |
 | Publish `3.0.0 --prev=1.0.0` | Local fork refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas because the chain skips the accepted `2.0.0` head |
 | Publish `2.0.0 --prev=2.0.0` | Local fork refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas as a same-version fork |
+| Publish `3.0.0` from a node with no domain key | Local `no private key` error; no package uploaded | Temporary signing key used; package uploaded; pointer rejected by all three replicas because the signer is not the domain owner |
 
-Ordinary refusal reports `refusing to publish` before uploading either immutable object. Forced refusal reports `updating the latest pointer` and `refused by 3 nodes`, showing that the request reached receiver validation.
+For invalid version updates, ordinary refusal reports `refusing to publish` before uploading either immutable object. A missing key instead reports `no private key`. Forced refusal reports `updating the latest pointer` and `refused by 3 nodes`, showing that the request reached receiver validation.
 
 ![Publication commands and output](labs/experiments/force-results/force-attempts-terminal.png)
 
+#### Publication without the owner key
+
+![Keyless publication is refused locally without force and by replicas with force](labs/experiments/force-results/force-keyless-terminal.png)
+
 #### Accepted version is preserved
 
-For every forced invalid attempt, the regression checks that the package bytes reached all three nodes while each stored pointer remains byte-for-byte unchanged. Installing `latest` returns the original `2.0.0` bytes. The demonstration also checks the installed file on every node.
+For every forced invalid attempt, the regressions check that the package bytes reached all three nodes while each stored pointer remains byte-for-byte unchanged. The keyless check also verifies that the uploaded version record is not signed by the owner and that the owner registry, existing owner key and empty key directory are unchanged. Installing `latest` returns the original `2.0.0` bytes. The demonstration also checks the installed file on every node.
 
 ![Version history and installation output](labs/experiments/force-results/force-preserved-latest-terminal.png)
 
-The regression passes with the race detector. Simulated tests additionally cover wrong-owner rejection and invalid history.
+The regressions run with the race detector. Separate checks require malformed or unreadable key files to fail locally even with force. Simulated tests additionally cover wrong-owner rejection and invalid history.
+
+The local UDP checks use three nodes, so all three are replicas with k = 10. The 50-container check in Section 6.2 has enough nodes for ten pointer replicas. The different refusal counts reflect the network sizes.
 
 The [transcript and test output](labs/experiments/force-results/README.md) provide the complete results.
 
 ### 3.5 Running the `--force` demonstration
 
-From `labs/`, start the interactive runner (requires Go and Python 3):
+From `labs/`, start a keyless node against an existing accepted history (requires Go and Python 3):
 
 ```sh
-./scripts/force-demo.sh --interactive
+./scripts/force-demo.sh --interactive --keyless
 ```
 
-The runner prepares the keys and files and publishes `1.0.0` then `2.0.0`. At the `>` prompt, enter one command at a time:
+The runner prepares the owner key and files, publishes `1.0.0` then `2.0.0` from the owner, and opens another node with no domain key. At the `>` prompt, enter one command at a time:
 
 ```text
-publish example.com:tool:1.5.0 v3.txt
-publish --force example.com:tool:1.5.0 v3.txt
-publish --force --prev=1.0.0 example.com:tool:3.0.0 v3.txt
+publish example.com:tool:3.0.0 v4.txt
+publish --force example.com:tool:3.0.0 v4.txt
 show example.com:tool
 install example.com:tool:latest installed.txt
 exit
 ```
 
-The first command reports `refusing to publish`; the next two report `updating the latest pointer` and refusal by three nodes. The chain remains `2.0.0 → 1.0.0`, and installation returns `2.0.0`.
+The first command reports `no private key`; the forced attempt reports `updating the latest pointer`, `signer is not the domain owner` and refusal by three nodes. The chain remains `2.0.0 → 1.0.0`, and installation returns `2.0.0`.
 
-Run `./scripts/force-demo.sh` without arguments for an automatic replay with file-byte checks. The [demonstration guide](labs/demo/FORCE-DEMO.md) includes further inputs and file-inspection steps. Section 10 includes the isolated regression command.
+Omit `--keyless` to test rollback and fork attempts from the owner. Run `./scripts/force-demo.sh` without arguments for an automatic replay of both scenarios with file-byte and ownership/key checks. The [demonstration guide](labs/demo/FORCE-DEMO.md) includes all inputs and file-inspection steps. Section 10 includes the isolated regression command.
 
 ## 4. Libraries and tools
 
@@ -445,7 +453,7 @@ go build -o /tmp/kadlab .
 To check `--force` independently or replay the demonstration:
 
 ```sh
-go test . -run '^TestPublishForceOverUDP$' -race -count=1 -v
+go test . -run '^TestPublishForce(OverUDP|WithoutDomainKeyOverUDP)$' -race -count=1 -v
 ./scripts/force-demo.sh
 ```
 

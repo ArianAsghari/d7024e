@@ -525,6 +525,45 @@ func TestSummarizeGivesOneLine(t *testing.T) {
 	}
 }
 
+func TestSummarizeCountsSignatureRefusalsByDestination(t *testing.T) {
+	// A local validator retains both signature error causes. UDP peers return
+	// the same complete reason as text, so all three must count alike.
+	local := fmt.Errorf("%w: %w: latest pointer is not signed by the owner of example.com", registry.ErrNotOwner, registry.ErrBadSignature)
+	err := summarize(errors.Join(
+		local,
+		fmt.Errorf("store on 10.0.0.1:8000: %w", errors.New(local.Error())),
+		fmt.Errorf("store on 10.0.0.2:8000: %w", errors.New(local.Error())),
+	))
+	want := local.Error() + " (refused by 3 nodes)"
+	if err.Error() != want {
+		t.Fatalf("signature refusal summary = %q, want %q", err, want)
+	}
+	for _, cause := range []error{registry.ErrNotOwner, registry.ErrBadSignature} {
+		if !errors.Is(err, cause) {
+			t.Fatalf("summary hid signature cause %v", cause)
+		}
+	}
+}
+
+func TestSummarizeKeepsDestinationCausesTogether(t *testing.T) {
+	first, second, timeout := errors.New("first cause"), errors.New("second cause"), errors.New("no response")
+	local := errors.Join(first, second)
+	err := summarize(errors.Join(
+		local,
+		fmt.Errorf("store on 10.0.0.1:8000: %w", errors.Join(first, second)),
+		fmt.Errorf("store on 10.0.0.2:8000: %w", timeout),
+	))
+	want := "first cause second cause (refused by 2 nodes); no response"
+	if err.Error() != want {
+		t.Fatalf("joined destination summary = %q, want %q", err, want)
+	}
+	for _, cause := range []error{first, second, timeout} {
+		if !errors.Is(err, cause) {
+			t.Fatalf("summary hid destination cause %v", cause)
+		}
+	}
+}
+
 func TestFailureHidesOnlyNotFound(t *testing.T) {
 	f := &failure{err: fmt.Errorf("%w: %w", registry.ErrMissingRecord, registry.ErrNotFound)}
 	if errors.Is(f, registry.ErrNotFound) {

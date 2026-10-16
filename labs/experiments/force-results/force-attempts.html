@@ -21,22 +21,22 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 20px/1.55
 <div class="terminal">
 <div class="titlebar"><div class="controls" aria-hidden="true"><span class="control close"></span><span class="control minimize"></span><span class="control zoom"></span></div>Terminal</div>
 <div class="output"><pre><span class="command">publisher&gt; publish --force example.com:tool:1.0.0 v1.txt
-</span>published example.com:tool:1.0.0 (package 645dbf12…03c5, record 61d182f4…6bd0)
+</span>published example.com:tool:1.0.0 (package 645dbf12…03c5, record 853a0d3c…0209)
 <span class="command">publisher&gt; publish --force --prev=1.0.0 example.com:tool:2.0.0 v2.txt
-</span>published example.com:tool:2.0.0 (package e598bc26…d1cd, record 437a83e4…0c5d)
+</span>published example.com:tool:2.0.0 (package e598bc26…d1cd, record 7780aea5…65d0)
 
 <span class="command">publisher&gt; publish example.com:tool:1.5.0 v3.txt
 </span>publish failed: refusing to publish example.com:tool:1.5.0: update would roll back to an older version: 1.5.0 is older than the current 2.0.0
 <span class="command">publisher&gt; publish --force example.com:tool:1.5.0 v3.txt
 </span>publish failed: updating the latest pointer: update would roll back to an older version: 1.5.0 is older than the current 2.0.0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
 <span class="command">publisher&gt; publish example.com:tool:2.0.0 v3.txt
-</span>publish failed: refusing to publish example.com:tool:2.0.0: update would fork the version history: version 2.0.0 already points at record 437a83e4…0c5d, not fc9c5e43…cb62
+</span>publish failed: refusing to publish example.com:tool:2.0.0: update would fork the version history: version 2.0.0 already points at record 7780aea5…65d0, not 838f678d…3796
 <span class="command">publisher&gt; publish --force example.com:tool:2.0.0 v3.txt
-</span>publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record 437a83e4…0c5d, not fc9c5e43…cb62 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+</span>publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record 7780aea5…65d0, not 838f678d…3796 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
 <span class="command">publisher&gt; publish --prev=1.0.0 example.com:tool:3.0.0 v3.txt
-</span>publish failed: refusing to publish example.com:tool:3.0.0: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 61d182f4…6bd0) without meeting the current record 437a83e4…0c5d
+</span>publish failed: refusing to publish example.com:tool:3.0.0: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 853a0d3c…0209) without meeting the current record 7780aea5…65d0
 <span class="command">publisher&gt; publish --force --prev=1.0.0 example.com:tool:3.0.0 v3.txt
-</span>publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 61d182f4…6bd0) without meeting the current record 437a83e4…0c5d (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+</span>publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 853a0d3c…0209) without meeting the current record 7780aea5…65d0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
 </pre></div>
 </div>
 </body>

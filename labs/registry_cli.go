@@ -128,6 +128,11 @@ func publishCommand(out io.Writer, node *kademlia.Kademlia, args []string) {
 		return
 	}
 	priv, err := loadDomainKey(parsed.Spec.Domain)
+	if parsed.Force && errors.Is(err, fs.ErrNotExist) {
+		// A keyless node can still demonstrate receiver-side rejection. This
+		// publication's temporary signer is never saved or registered as owner.
+		_, priv, err = registry.GenerateKey()
+	}
 	if err != nil {
 		fmt.Fprintf(out, "publish failed: %s\n", oneLine(err))
 		return
@@ -175,7 +180,7 @@ func loadDomainKey(domain string) (ed25519.PrivateKey, error) {
 	dir := getKeysDir()
 	priv, err := registry.LoadPrivateKey(filepath.Join(dir, domain))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("no private key for %s in %s (create one with: keygen %s)", domain, dir, domain)
+		return nil, fmt.Errorf("no private key for %s in %s (create one with: keygen %s): %w", domain, dir, domain, err)
 	}
 	return priv, err
 }
