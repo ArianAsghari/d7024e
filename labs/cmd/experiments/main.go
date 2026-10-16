@@ -1,4 +1,4 @@
-// Command experiments runs the lab's two mandatory experiments on the
+// Command experiments runs the lab's evaluation experiments on the
 // simulated network and writes their event logs (JSON lines) to a directory.
 // The logs are analysed by scripts/analyze.py.
 //
@@ -24,7 +24,7 @@ func main() {
 
 func run(args []string) error {
 	flags := flag.NewFlagSet("experiments", flag.ContinueOnError)
-	which := flags.String("exp", "all", "experiment to run: scalability, reliability or all")
+	which := flags.String("exp", "all", "experiment to run: scalability, reliability, churn or all")
 	out := flags.String("out", "experiments/results", "output directory for the .jsonl logs")
 	seeds := flags.Int("seeds", 10, "number of RNG seeds (1..seeds) per configuration")
 	quick := flags.Bool("quick", false, "use a tiny configuration (smoke test)")
@@ -32,8 +32,11 @@ func run(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *which != "all" && *which != "scalability" && *which != "reliability" {
+	if *which != "all" && *which != "scalability" && *which != "reliability" && *which != "churn" {
 		return fmt.Errorf("unknown experiment %q", *which)
+	}
+	if *seeds < 1 {
+		return fmt.Errorf("seeds must be positive")
 	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
@@ -58,11 +61,17 @@ func run(args []string) error {
 			{Name: "alpha1-retries0", Alpha: 1, Retries: 0},
 		},
 	}
+	churn := experiment.ChurnConfig{
+		N: 1000, Seeds: seedList, Values: 50, NodeLookups: 100, Workers: *workers,
+		Fractions: []float64{0, 0.1, 0.3, 0.5, 0.8, 0.9},
+	}
 	if *quick {
 		scalability.Sizes, scalability.NodeLookups, scalability.ValueLookups = []int{16, 64}, 5, 5
 		reliability.N, reliability.Values, reliability.Lookups = 60, 3, 10
 		reliability.Losses = []float64{0, 0.3}
 		reliability.Variants = reliability.Variants[:2]
+		churn.N, churn.Values, churn.NodeLookups = 60, 3, 5
+		churn.Fractions = []float64{0, 0.3}
 	}
 
 	if *which == "all" || *which == "scalability" {
@@ -75,6 +84,13 @@ func run(args []string) error {
 	if *which == "all" || *which == "reliability" {
 		if err := writeLog(filepath.Join(*out, "reliability.jsonl"), func(f *os.File) error {
 			return experiment.RunReliability(f, reliability)
+		}); err != nil {
+			return err
+		}
+	}
+	if *which == "all" || *which == "churn" {
+		if err := writeLog(filepath.Join(*out, "churn.jsonl"), func(f *os.File) error {
+			return experiment.RunChurn(f, churn)
 		}); err != nil {
 			return err
 		}

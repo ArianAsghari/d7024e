@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 460" font-family="sans-serif" font-size="12">
+<rect width="720" height="460" fill="white"/>
+<text x="360.0" y="24" text-anchor="middle" font-size="15" font-weight="bold">Routing and value availability after abrupt departures</text>
+<line x1="70" y1="390.0" x2="700" y2="390.0" stroke="#e0e0e0"/>
+<text x="62" y="394.0" text-anchor="end">0</text>
+<line x1="70" y1="322.0" x2="700" y2="322.0" stroke="#e0e0e0"/>
+<text x="62" y="326.0" text-anchor="end">20</text>
+<line x1="70" y1="254.0" x2="700" y2="254.0" stroke="#e0e0e0"/>
+<text x="62" y="258.0" text-anchor="end">40</text>
+<line x1="70" y1="186.0" x2="700" y2="186.0" stroke="#e0e0e0"/>
+<text x="62" y="190.0" text-anchor="end">60</text>
+<line x1="70" y1="118.0" x2="700" y2="118.0" stroke="#e0e0e0"/>
+<text x="62" y="122.0" text-anchor="end">80</text>
+<line x1="70" y1="50.0" x2="700" y2="50.0" stroke="#e0e0e0"/>
+<text x="62" y="54.0" text-anchor="end">100</text>
+<line x1="70.0" y1="50" x2="70.0" y2="390" stroke="#f0f0f0"/>
+<text x="70.0" y="406" text-anchor="middle">0</text>
+<line x1="140.0" y1="50" x2="140.0" y2="390" stroke="#f0f0f0"/>
+<text x="140.0" y="406" text-anchor="middle">10</text>
+<line x1="280.0" y1="50" x2="280.0" y2="390" stroke="#f0f0f0"/>
+<text x="280.0" y="406" text-anchor="middle">30</text>
+<line x1="420.0" y1="50" x2="420.0" y2="390" stroke="#f0f0f0"/>
+<text x="420.0" y="406" text-anchor="middle">50</text>
+<line x1="630.0" y1="50" x2="630.0" y2="390" stroke="#f0f0f0"/>
+<text x="630.0" y="406" text-anchor="middle">80</text>
+<line x1="700.0" y1="50" x2="700.0" y2="390" stroke="#f0f0f0"/>
+<text x="700.0" y="406" text-anchor="middle">90</text>
+<rect x="70" y="50" width="630" height="340" fill="none" stroke="#444"/>
+<text x="385.0" y="430" text-anchor="middle">initial nodes crashed (%)</text>
+<text transform="translate(18 220.0) rotate(-90)" text-anchor="middle">success or availability (%)</text>
+<polyline points="70.0,50.0 140.0,50.0 280.0,50.0 420.0,50.0 630.0,101.7 700.0,248.9" fill="none" stroke="#1f77b4" stroke-width="2"/>
+<line x1="70.0" y1="50.0" x2="70.0" y2="50.0" stroke="#1f77b4"/>
+<circle cx="70.0" cy="50.0" r="3.5" fill="#1f77b4"/>
+<line x1="140.0" y1="50.0" x2="140.0" y2="50.0" stroke="#1f77b4"/>
+<circle cx="140.0" cy="50.0" r="3.5" fill="#1f77b4"/>
+<line x1="280.0" y1="50.0" x2="280.0" y2="50.0" stroke="#1f77b4"/>
+<circle cx="280.0" cy="50.0" r="3.5" fill="#1f77b4"/>
+<line x1="420.0" y1="50.0" x2="420.0" y2="50.0" stroke="#1f77b4"/>
+<circle cx="420.0" cy="50.0" r="3.5" fill="#1f77b4"/>
+<line x1="630.0" y1="101.7" x2="630.0" y2="101.7" stroke="#1f77b4"/>
+<circle cx="630.0" cy="101.7" r="3.5" fill="#1f77b4"/>
+<line x1="700.0" y1="248.9" x2="700.0" y2="248.9" stroke="#1f77b4"/>
+<circle cx="700.0" cy="248.9" r="3.5" fill="#1f77b4"/>
+<polyline points="70.0,50.0 140.0,50.0 280.0,50.0 420.0,50.0 630.0,86.7 700.0,175.1" fill="none" stroke="#d62728" stroke-width="2"/>
+<line x1="70.0" y1="50.0" x2="70.0" y2="50.0" stroke="#d62728"/>
+<circle cx="70.0" cy="50.0" r="3.5" fill="#d62728"/>
+<line x1="140.0" y1="50.0" x2="140.0" y2="50.0" stroke="#d62728"/>
+<circle cx="140.0" cy="50.0" r="3.5" fill="#d62728"/>
+<line x1="280.0" y1="50.0" x2="280.0" y2="50.0" stroke="#d62728"/>
+<circle cx="280.0" cy="50.0" r="3.5" fill="#d62728"/>
+<line x1="420.0" y1="50.0" x2="420.0" y2="50.0" stroke="#d62728"/>
+<circle cx="420.0" cy="50.0" r="3.5" fill="#d62728"/>
+<line x1="630.0" y1="86.7" x2="630.0" y2="86.7" stroke="#d62728"/>
+<circle cx="630.0" cy="86.7" r="3.5" fill="#d62728"/>
+<line x1="700.0" y1="175.1" x2="700.0" y2="175.1" stroke="#d62728"/>
+<circle cx="700.0" cy="175.1" r="3.5" fill="#d62728"/>
+<polyline points="70.0,50.0 140.0,50.0 280.0,50.0 420.0,50.0 630.0,120.0 700.0,253.3" fill="none" stroke="#2ca02c" stroke-width="2"/>
+<line x1="70.0" y1="50.0" x2="70.0" y2="50.0" stroke="#2ca02c"/>
+<circle cx="70.0" cy="50.0" r="3.5" fill="#2ca02c"/>
+<line x1="140.0" y1="50.0" x2="140.0" y2="50.0" stroke="#2ca02c"/>
+<circle cx="140.0" cy="50.0" r="3.5" fill="#2ca02c"/>
+<line x1="280.0" y1="50.0" x2="280.0" y2="50.0" stroke="#2ca02c"/>
+<circle cx="280.0" cy="50.0" r="3.5" fill="#2ca02c"/>
+<line x1="420.0" y1="50.0" x2="420.0" y2="50.0" stroke="#2ca02c"/>
+<circle cx="420.0" cy="50.0" r="3.5" fill="#2ca02c"/>
+<line x1="630.0" y1="120.0" x2="630.0" y2="120.0" stroke="#2ca02c"/>
+<circle cx="630.0" cy="120.0" r="3.5" fill="#2ca02c"/>
+<line x1="700.0" y1="253.3" x2="700.0" y2="253.3" stroke="#2ca02c"/>
+<circle cx="700.0" cy="253.3" r="3.5" fill="#2ca02c"/>
+<polyline points="70.0,50.0 140.0,50.0 280.0,50.0 420.0,50.0 630.0,87.4 700.0,173.7" fill="none" stroke="#9467bd" stroke-width="2"/>
+<line x1="70.0" y1="50.0" x2="70.0" y2="50.0" stroke="#9467bd"/>
+<circle cx="70.0" cy="50.0" r="3.5" fill="#9467bd"/>
+<line x1="140.0" y1="50.0" x2="140.0" y2="50.0" stroke="#9467bd"/>
+<circle cx="140.0" cy="50.0" r="3.5" fill="#9467bd"/>
+<line x1="280.0" y1="50.0" x2="280.0" y2="50.0" stroke="#9467bd"/>
+<circle cx="280.0" cy="50.0" r="3.5" fill="#9467bd"/>
+<line x1="420.0" y1="50.0" x2="420.0" y2="50.0" stroke="#9467bd"/>
+<circle cx="420.0" cy="50.0" r="3.5" fill="#9467bd"/>
+<line x1="630.0" y1="87.4" x2="630.0" y2="87.4" stroke="#9467bd"/>
+<circle cx="630.0" cy="87.4" r="3.5" fill="#9467bd"/>
+<line x1="700.0" y1="173.7" x2="700.0" y2="173.7" stroke="#9467bd"/>
+<circle cx="700.0" cy="173.7" r="3.5" fill="#9467bd"/>
+<line x1="82" y1="326" x2="110" y2="326" stroke="#1f77b4" stroke-width="2"/>
+<text x="116" y="330">FIND_NODE finds globally closest live peer</text>
+<line x1="82" y1="343" x2="110" y2="343" stroke="#d62728" stroke-width="2"/>
+<text x="116" y="347">values with an original live replica</text>
+<line x1="82" y1="360" x2="110" y2="360" stroke="#2ca02c" stroke-width="2"/>
+<text x="116" y="364">FIND_VALUE success (all values)</text>
+<line x1="82" y1="377" x2="110" y2="377" stroke="#9467bd" stroke-width="2"/>
+<text x="116" y="381">FIND_VALUE success given a live replica</text>
+<text x="70" y="452" font-size="11" fill="#555">Each seed: 100 node and 50 distinct value lookups; counts in churn.csv.</text>
+</svg>

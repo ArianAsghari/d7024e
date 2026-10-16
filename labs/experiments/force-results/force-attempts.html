@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Terminal</title>
+<style>
+* { box-sizing: border-box; }
+html { background: #000; }
+body { margin: 0; padding: 16px; background: #000; color: #eee; }
+.terminal { overflow: hidden; border: 1px solid #484848; border-radius: 10px; background: #000; }
+.titlebar { position: relative; height: 40px; border-bottom: 1px solid #111; background: #2c2c2c; color: #d7d7d7; text-align: center; font: 600 13px/39px -apple-system, BlinkMacSystemFont, Arial, sans-serif; }
+.controls { position: absolute; top: 13px; left: 15px; display: flex; gap: 8px; }
+.control { display: block; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+.close { background: #ff5f57; }
+.minimize { background: #febc2e; }
+.zoom { background: #28c840; }
+.output { padding: 26px 28px; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 20px/1.55 Menlo, Monaco, monospace; font-variant-ligatures: none; }
+.command { color: #a7e3a1; }
+</style>
+<body>
+<div class="terminal">
+<div class="titlebar"><div class="controls" aria-hidden="true"><span class="control close"></span><span class="control minimize"></span><span class="control zoom"></span></div>Terminal</div>
+<div class="output"><pre><span class="command">publisher&gt; publish --force example.com:tool:1.0.0 v1.txt
+</span>published example.com:tool:1.0.0 (package 645dbf12…03c5, record 61d182f4…6bd0)
+<span class="command">publisher&gt; publish --force --prev=1.0.0 example.com:tool:2.0.0 v2.txt
+</span>published example.com:tool:2.0.0 (package e598bc26…d1cd, record 437a83e4…0c5d)
+
+<span class="command">publisher&gt; publish example.com:tool:1.5.0 v3.txt
+</span>publish failed: refusing to publish example.com:tool:1.5.0: update would roll back to an older version: 1.5.0 is older than the current 2.0.0
+<span class="command">publisher&gt; publish --force example.com:tool:1.5.0 v3.txt
+</span>publish failed: updating the latest pointer: update would roll back to an older version: 1.5.0 is older than the current 2.0.0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+<span class="command">publisher&gt; publish example.com:tool:2.0.0 v3.txt
+</span>publish failed: refusing to publish example.com:tool:2.0.0: update would fork the version history: version 2.0.0 already points at record 437a83e4…0c5d, not fc9c5e43…cb62
+<span class="command">publisher&gt; publish --force example.com:tool:2.0.0 v3.txt
+</span>publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record 437a83e4…0c5d, not fc9c5e43…cb62 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+<span class="command">publisher&gt; publish --prev=1.0.0 example.com:tool:3.0.0 v3.txt
+</span>publish failed: refusing to publish example.com:tool:3.0.0: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 61d182f4…6bd0) without meeting the current record 437a83e4…0c5d
+<span class="command">publisher&gt; publish --force --prev=1.0.0 example.com:tool:3.0.0 v3.txt
+</span>publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 61d182f4…6bd0) without meeting the current record 437a83e4…0c5d (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+</pre></div>
+</div>
+</body>
+</html>

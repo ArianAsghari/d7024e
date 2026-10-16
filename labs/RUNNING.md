@@ -225,7 +225,14 @@ go run ./cmd/experiments -quick -seeds 2 -out /tmp/kademlia-experiment-smoke
 python3 scripts/analyze.py /tmp/kademlia-experiment-smoke
 ```
 
-The full default run uses ten seeds per configuration. The analysis writes CSV tables, SVG plots, and a Markdown summary. See [the report](../REPORT.md#experimental-evaluation) for methodology, expectations, results, and limitations.
+The full default run uses ten seeds per configuration. It includes scalability, packet loss and abrupt-departure experiments. The analysis writes CSV tables, SVG plots, and a Markdown summary. To reproduce only the new 1000-node crash-fraction sweep (0%, 10%, 30%, 50%, 80%, 90% removed):
+
+```sh
+go run ./cmd/experiments -exp churn -seeds 10 -workers 4 -out experiments/churn-results
+python3 scripts/analyze.py experiments/churn-results
+```
+
+See [the report](../REPORT.md#7-experimental-evaluation) and [recorded churn results](experiments/churn-results/summary.md) for methodology and results. This experiment measures a burst of departures followed by lookup and manual replica repair; it does not measure departures per second or continuous joins/leaves.
 
 ## Docker
 
@@ -390,6 +397,10 @@ Assume a replica currently knows `1.1.0 → 1.0.0`. A signed `1.0.1` pointer is 
 If a replica knows 1.0.0 and receives 1.2.0, the validator fetches the 1.2.0 and 1.1.0 records by hash, verifies their signatures and identities, and follows them back to its accepted 1.0.0. Missing or invalid history causes rejection; the old pointer stays. Strictly decreasing versions while walking backwards exclude cycles. The default 1000-record traversal limit bounds work.
 
 `--force` skips the publishing client's policy precheck, allowing a demonstration of what receivers reject. It does not disable receiver validation. `--prev=1.0.0` deliberately chooses an older predecessor, which can create a fork attempt. These flags test enforcement at the replicas, where an untrusted publisher cannot turn it off.
+
+For an invalid update, `publish failed: refusing to publish ...` identifies local preflight refusal. With force, `publish failed: updating the latest pointer: ... (refused by N nodes)` demonstrates that the upload was attempted and replicas refused the pointer. The accepted head must remain unchanged. An explicit predecessor must still exist so its record hash can be referenced. Run `go test . -run '^TestPublishForceOverUDP$' -race -count=1 -v` for a self-contained three-node UDP check of those stages, valid forced publication and unchanged heads after invalid forced attempts. See [report Section 3.4](../REPORT.md#34-verified---force-behavior) for the commands and observed outcomes.
+
+To type the commands yourself, run `./scripts/force-demo.sh --interactive`. It starts three fresh local UDP nodes, prepares the owner key and files, and publishes `1.0.0` then `2.0.0` before opening the prompt. Follow the [manual force guide](demo/FORCE-DEMO.md); [screenshots and the original console transcript](experiments/force-results/README.md) show the observed results. This runner leaves the Docker demo intact.
 
 ### 7. Understand the cache fix and its boundary
 

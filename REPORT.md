@@ -1,22 +1,35 @@
 # D7024E Lab Report — Decentralized Package Registry
 
-**Group number:** 9
-
-**Group members:** Sungtae Kim, Jerald Jia Wei Lim, Arian Asghari
+**Group 9:** Sungtae Kim, Jerald Jia Wei Lim, Arian Asghari
 
 **Repository:** [ArianAsghari/d7024e](https://github.com/ArianAsghari/d7024e)
 
-**Implementation assessed:** `e98c92d` (source and recorded results checked at `64ba538`; later changes are documentation only). **Report date:** 12 October 2026. `REPORT.md` is the source for the final report and PDF export.
+**Revision:** 16 October 2026; working tree based on `3488962`. Section 6.2 retains the earlier `e98c92d` container results.
 
 ## Summary
 
-We implemented a decentralized package registry in Go in two layers. Part 1 is a Kademlia distributed hash table that stores content-addressed values over UDP. Part 2 adds domain-owned package names, Ed25519-signed version records and a mutable latest pointer that every node validates against rollback and forks. On a simulated network, lookups needed 10.0 to 14.2 probes for nodes and 3.0 to 6.6 for values as the network grew from 16 to 2048 nodes. At 50% per-leg packet loss, value lookups still succeeded 99.7% to 99.9% of the time with two retries, against 83.7% to 84.5% without retries. The test suite, including two 1000-node scenarios, passes with the race detector at about 93% statement coverage, and the registry was verified on a 50-container Docker Swarm.
+We implemented a decentralized package registry in Go. Part 1 is a Kademlia distributed hash table that stores content-addressed values over UDP. Part 2 adds domain-owned package names, Ed25519-signed version records and a mutable latest pointer that every node validates against rollback and forks. The `--force` command bypasses the publisher's proposed-update check while preserving validation at receiving nodes.
+
+On the simulated network, lookup work grew slowly from 16 to 2048 nodes: 10.0–14.2 probes for nodes and 3.0–6.6 for values. At 50% per-leg packet loss, two retries raised value-lookup success from 83.7–84.5% to 99.7–99.9%. A 1000-node crash sweep retained 100% retrieval through 50% abrupt removal, with more routing work and fewer replicas; more severe removal caused retrieval failures, and one repair pass did not fully restore replication. The test suite passes with race detection and 93.4% combined statement coverage. Registry integration was also verified on a 50-container Docker Swarm.
+
+## Contents
+
+1. [Introduction](#1-introduction)
+2. [Distributed storage](#2-part-1-distributed-storage)
+3. [Signed package registry](#3-part-2-signed-package-registry), including [`--force`](#34-verified---force-behavior)
+4. [Libraries and tools](#4-libraries-and-tools)
+5. [Thread safety](#5-thread-safety)
+6. [Testing and verification](#6-testing-and-verification)
+7. [Experimental evaluation](#7-experimental-evaluation)
+8. [Work beyond the minimum requirements](#8-work-beyond-the-minimum-requirements)
+9. [Limitations and possible improvements](#9-limitations-and-possible-improvements)
+10. [Reproduction and sources](#10-reproduction-and-sources)
 
 ## 1. Introduction
 
 We built a decentralized package registry for D7024E Mobile and Distributed Computing Systems at Luleå University of Technology. Package files are distributed across participating nodes instead of one central server. Part 1 provides a Kademlia distributed hash table (DHT): a key-value store that finds data by a 256-bit identifier. Part 2 adds names such as `example.com:tool:1.0.0`, domain ownership, signed release records and a mutable pointer to the latest release. Each node checks that updates extend its accepted history, while clients verify who published a package and that its contents match the signed record.
 
-A node is one running program instance. Kademlia uses the numerical XOR distance between identifiers to select nearby peers; this distance does not represent physical location. A lookup progressively learns contacts closer to its target. The parameters k and α control the desired replica count/bucket capacity and the number of concurrent lookup probes, respectively. Our defaults are k = 10 and α = 3.
+A node is one running program instance. Kademlia uses **bitwise XOR** between identifiers, interpreting the result as an unsigned integer distance, to select nearby peers; this distance does not represent physical location. A lookup progressively learns contacts closer to its target. The parameters k and α control the desired replica count/bucket capacity and the number of concurrent lookup probes, respectively. Our defaults are k = 10 and α = 3.
 
 This report follows the [lab specification](labs/LAB-SPEC.md) and [package-registry design](labs/PART2-DESIGN.md). It explains the implementation, concurrency controls and limits, then evaluates lookup scalability, resilience to packet loss and the integrated registry on containers.
 
@@ -67,15 +80,19 @@ For readers who want to modify the system, this table maps the components to the
 
 A node ID is SHA-256 of its concrete IP:port string. Immutable data is stored under SHA-256(value). Both are 256 bits. The routing table uses the permitted b = 1 simplification: 256 fixed k-buckets. k defaults to 10 and is adjustable through `NewRoutingTable(me, k)`, which also controls the desired replication factor.
 
+Distance is `d(x, y) = x XOR y`, using bitwise XOR on corresponding bits. In [`CalcDistance`](labs/kademlia/kademliaid.go), Go's `^` operator XORs corresponding bytes; `Less` compares the resulting 32-byte distances from the most significant byte, equivalent to ordering unsigned big-endian 256-bit integers. For a four-bit illustration, `1010 XOR 1011 = 0001` (1), whereas `1010 XOR 0010 = 1000` (8), so `1011` is closer to `1010`. The XOR operation is bitwise; the numerical interpretation orders its result. This follows the distance definition in Section 2 of the [original Kademlia paper](https://www.scs.stanford.edu/~dm/home/papers/kpos.pdf), using 256-bit IDs in place of the paper's 160-bit IDs.
+
 Each bucket keeps contacts in recency order. A known contact moves to the most-recently-seen end. When the bucket is full, the node pings its least-recently-seen contact, retaining a responsive peer or replacing an unresponsive one. Protection against a contact being refreshed during that ping is described in Section 5.
 
-Both node and value lookups proceed iteratively in rounds of up to α concurrent probes. α defaults to 3 and is adjustable through `ALPHA` or `SetAlpha`. A coordinator owns the candidate set, waits for the current batch, incorporates referrals and excludes failed peers. Each peer is queried at most once per lookup, apart from transport-level retries. Node lookup ends when the closest remaining candidates have been queried; value lookup may finish after a batch returns valid data.
+Both node and value lookups proceed iteratively in rounds of up to α concurrent probes. α defaults to 3 and is adjustable through `ALPHA` or `SetAlpha`. A coordinator owns the candidate set, waits for the current batch, incorporates referrals and excludes failed peers. Each peer is queried at most once per lookup, apart from transport-level retries. Node lookup ends when the closest remaining candidates have been queried; value lookup may finish after a batch returns valid data. Waiting for the entire batch is our scheduling choice, not a requirement of Kademlia; Section 9.1 explains the reason, alternatives and trade-offs.
 
 ### 2.3 Storage and the UDP protocol
 
 Store hashes a value, finds the closest candidates including the local node when appropriate, and attempts replication to up to k nodes. `LookupData` checks the local store before querying peers. Immutable values must pass the size and hash checks on both storage and retrieval. Incorrect bytes are rejected and reported. Valid immutable lookup results are cached locally; mutable registry pointers follow the separate rules in Section 3.
 
-The transport implements PING, STORE, FIND_NODE and FIND_VALUE over UDP. Each outgoing RPC uses its own connected socket and a random 128-bit request ID. The reply must match that identifier and the expected message type. An attacker unable to observe the request cannot feasibly guess its identifier; this is request correlation, not authentication of all network traffic.
+The transport implements PING, STORE, FIND_NODE and FIND_VALUE over UDP. A socket is a local operating-system endpoint used to send and receive datagrams. Each node binds one long-lived UDP listening socket for incoming requests. For each outgoing RPC, [`roundTrip`](labs/kademlia/network.go) calls `net.DialUDP("udp", nil, remote)`, creating a separate local UDP socket whose source address and ephemeral port are chosen automatically. Here **connected UDP** means that the local socket is associated with one remote IP:port; it involves no connection handshake or reliable session. Requests and retries leave through that socket. The remote node's listener sends the reply to the request datagram's source address/port, and the caller receives it on its temporary socket, then closes that socket when the RPC finishes. See Go's [`DialUDP` documentation](https://pkg.go.dev/net#DialUDP).
+
+Separate outgoing sockets isolate concurrent reads and deadlines; UDP itself does not require one socket per RPC. A shared socket with a request-ID dispatcher could also work. Every RPC has a random 128-bit request ID, and its reply must match that identifier and the expected message type. An attacker unable to observe the request cannot feasibly guess its identifier; this is request correlation, not authentication of all network traffic.
 
 The default deadline is 500 ms per attempt, with two retries, giving at most three transmissions. Retries retain the same ID and payload. Malformed replies and replies with a different ID are ignored until the current deadline. `RPC_TIMEOUT` sets the deadline at startup. A STORE acknowledgement is sent after validation/storage, so validation that fetches missing history can outlast the publisher’s deadline.
 
@@ -141,6 +158,58 @@ A 50-container check exposed stale latest pointers on readers outside the k clos
 
 Publication consists of independent writes, not one transaction. A replica that accepts a pointer retains it even when another destination rejects or times out. A timeout can mean the outcome is unknown, since validation may finish after the publisher stops waiting. The CLI explains that accepting replicas keep their writes.
 
+### 3.4 Verified `--force` behavior
+
+The [lab specification](labs/LAB-SPEC.md) requires `--force` to bypass the publisher's proposed-update check. [`Client.Publish`](labs/registry/client.go) then uploads the immutable package and signed version record and attempts the latest-pointer STORE. **Receiving nodes still validate the update:** an invalid forced publication must reach the replicas and be rejected there. Syntax, file limits and signing-key requirements still apply. An explicit `--prev=VERSION` must identify an existing record whose hash can be included in the signed release.
+
+#### Publication checks
+
+The UDP regression, [`TestPublishForceOverUDP`](labs/registry_cli_test.go), first publishes `1.0.0` with `--force`, then `2.0.0` with `--force --prev=1.0.0`. Both valid updates succeed. It then attempts the following invalid updates with different package contents:
+
+| Attempt after accepting `2.0.0` | Without `--force` | With `--force` |
+| --- | --- | --- |
+| Publish `1.5.0`, default predecessor | Local rollback refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas as rollback |
+| Publish `2.0.0` with different contents | Local fork refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas as a same-version fork |
+| Publish `3.0.0 --prev=1.0.0` | Local fork refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas because the chain skips the accepted `2.0.0` head |
+| Publish `2.0.0 --prev=2.0.0` | Local fork refusal; no package uploaded | Package uploaded; pointer rejected by all three replicas as a same-version fork |
+
+Ordinary refusal reports `refusing to publish` before uploading either immutable object. Forced refusal reports `updating the latest pointer` and `refused by 3 nodes`, showing that the request reached receiver validation.
+
+![Publication commands and output](labs/experiments/force-results/force-attempts-terminal.png)
+
+#### Accepted version is preserved
+
+For every forced invalid attempt, the regression checks that the package bytes reached all three nodes while each stored pointer remains byte-for-byte unchanged. Installing `latest` returns the original `2.0.0` bytes. The demonstration also checks the installed file on every node.
+
+![Version history and installation output](labs/experiments/force-results/force-preserved-latest-terminal.png)
+
+The regression passes with the race detector. Simulated tests additionally cover wrong-owner rejection and invalid history.
+
+The [transcript and test output](labs/experiments/force-results/README.md) provide the complete results.
+
+### 3.5 Running the `--force` demonstration
+
+From `labs/`, start the interactive runner (requires Go and Python 3):
+
+```sh
+./scripts/force-demo.sh --interactive
+```
+
+The runner prepares the keys and files and publishes `1.0.0` then `2.0.0`. At the `>` prompt, enter one command at a time:
+
+```text
+publish example.com:tool:1.5.0 v3.txt
+publish --force example.com:tool:1.5.0 v3.txt
+publish --force --prev=1.0.0 example.com:tool:3.0.0 v3.txt
+show example.com:tool
+install example.com:tool:latest installed.txt
+exit
+```
+
+The first command reports `refusing to publish`; the next two report `updating the latest pointer` and refusal by three nodes. The chain remains `2.0.0 → 1.0.0`, and installation returns `2.0.0`.
+
+Run `./scripts/force-demo.sh` without arguments for an automatic replay with file-byte checks. The [demonstration guide](labs/demo/FORCE-DEMO.md) includes further inputs and file-inspection steps. Section 10 includes the isolated regression command.
+
 ## 4. Libraries and tools
 
 The application has no third-party Go module dependencies. `labs/go.mod` declares Go 1.22.1, and the container builder uses Go 1.22. Goroutines and channels support concurrent RPC handlers, lookup probes and maintenance workers. The Dockerfile builds with `CGO_ENABLED=0` and copies the standalone executable into an Alpine runtime image. Using the standard library keeps these mechanisms inspectable without a separate RPC framework.
@@ -150,7 +219,7 @@ The application has no third-party Go module dependencies. `labs/go.mod` declare
 - **Data structures and concurrency:** `container/list` maintains bucket contacts in recency order; `sort` orders contacts by XOR distance. `sync` and `sync/atomic` protect shared state and counters. `context` and `time` control cancellation, maintenance intervals and deadlines. `math/rand` supplies seeded experiment inputs, and `hash/fnv` helps derive reproducible simulated transport draws.
 - **Shell, files and testing:** `bufio`, `fmt`, `strings`, `io`, `os` and `path/filepath` support commands, configuration and files. `errors` preserves failure causes; `log/slog` emits structured lookup events. Go's `testing` package, race detector and statement-coverage tooling support verification.
 - **Containers:** Docker runs one node per container; Docker Swarm supplies the overlay network and service scaling. One `kadlab` image provides the executable for the bootstrap and workers. We deployed one bootstrap plus 49 workers for the 50-container check.
-- **Analysis:** the separate script, `labs/scripts/analyze.py`, uses only Python's standard library to parse event logs, compute statistics and generate CSV tables and SVG figures. This keeps the analysis reproducible without plotting dependencies. The three figures below are the committed outputs of that script; we did not regenerate the full experiment sweep for the final report edit.
+- **Analysis:** the separate script, `labs/scripts/analyze.py`, uses only Python's standard library to parse event logs, compute statistics and generate CSV tables and SVG figures. This keeps the analysis reproducible without plotting dependencies. The original scalability and packet-loss figures are retained from their recorded sweep; the additional churn measurements are described in Section 7.4.
 
 ## 5. Thread safety
 
@@ -178,7 +247,7 @@ Replication and refresh each run sequential passes in one worker. Idle-range che
 
 ### 6.1 Automated checks
 
-We ran the complete six-package suite on 12 October 2026 with Go 1.26.3 on darwin/arm64, race detection and a fresh combined coverage profile. All tests passed with about 93% combined statement coverage (**93.3%** in this run; an independent rerun with Go 1.27.1 gave 93.8%, so the figure varies slightly between runs), above the required 80%. Both 1000-node scenarios ran without short-mode exclusions. `go vet ./...` and the node build also passed. These checks used source at `64ba538`, whose changes after `e98c92d` are documentation only. We also rebuilt the container image from `e98c92d` for the integrated run below.
+We reran the complete six-package suite on **16 October 2026** with Go 1.26.3 on darwin/arm64, race detection and a fresh combined coverage profile. All tests passed with **93.4% combined statement coverage**, above the required 80%. Both 1000-node scenarios ran without short-mode exclusions, along with the new UDP force regression and churn-runner tests. `go vet ./...`, the node build and the Python analyzer's availability/routing accounting test also passed. These checks cover the revised working tree identified at the start of this report. The container results below remain the historical `e98c92d` integration run; we did not recreate that stack for this revision.
 
 Tests cover routing and bucket eviction, join and refresh ranges, replica restoration after churn, α bounds and overlapping probes, size limits, hash checks, event logging and cancellation. Real loopback UDP tests cover message correlation, multi-peer lookups, maximum-sized values, fetching history during validation, late STORE completion after a timeout and acknowledgement with a longer deadline. Race detection checks exercised execution paths; it is not a proof of every possible interleaving.
 
@@ -270,7 +339,61 @@ At 50% per-leg loss, α = 3 with two retries achieves 99.7% ± 0.5 percentage po
 
 Parallelism also changes the amount of work. At zero loss with two retries, α = 3 averages 5.1 logical probes over 1.7 rounds, versus 1.8 probes over 1.8 rounds for α = 1. At 50% loss those figures are 6.2/2.1 and 3.4/3.4. A complete parallel batch runs even when one response already has the value, increasing probes while potentially reducing sequential rounds. Neither metric counts retransmissions or real timeout delays.
 
-The main limits are independent loss after healthy setup, small in-memory values and evolving caches. Correlated loss, lossy joins, concurrent churn, real timeout delays and larger packages could change the outcome. Churn is tested separately by the 1000-node scenario. The full committed sweep was retained for this report; the final integration checks do not constitute a rerun of all measurements.
+The main limits are independent loss after healthy setup, small in-memory values and evolving caches. Correlated loss, lossy joins, concurrent churn, real timeout delays and larger packages could change the outcome. The original 1000-node churn test is a correctness check, not a performance result. Section 7.4 adds quantitative crash-burst measurements. The original scalability and loss sweep was retained for this revision; the new checks do not constitute a rerun of those measurements.
+
+### 7.4 Experiment 3: effects of abrupt departures from 1000 nodes
+
+#### Method
+
+The earlier 1000-node test retrieved 30 values after removing 100 nodes, but recorded no comparative churn measurements. We therefore ran [`RunChurn`](labs/experiment/churn.go), retaining the [raw measurements, CSV tables and plots](labs/experiments/churn-results/). Each of six removal fractions (0%, 10%, 30%, 50%, 80%, 90%) uses ten independently built 1000-node networks, seeds 1–10, k = 10 and α = 3. Each network joins and stores 50 distinct values while healthy. A separate seeded random permutation chooses the nodes removed simultaneously, without graceful departure notifications. There are no new arrivals, packet loss, injected latency, retry delays or periodic workers. This measures a **crash fraction**, not a continuous churn rate.
+
+After removal, each run measures 100 node lookups against the globally closest *live* peer (excluding the initiator), then reads each of the 50 values once from a surviving non-holder. The total is 6000 node and 3000 value lookups. Original live copies are counted before reads, so an unavailable value can be distinguished from failure to route to a surviving copy. Each key has only one measured read per network; later reads of that same key cannot benefit from a measurement-created cache. Successful reads do create immutable caches, and routing tables evolve during the sequential workload. Counts include both successful and failed lookups.
+
+#### Lookup cost and availability
+
+*Table 4. Results after departures. Each row pools 1000 node and 500 value lookups across ten seeds. Probe cost is mean ± sample SD of per-seed means; copy counts are means over all 500 values immediately after the crash.*
+
+| Removed | Live nodes | True closest live peer found | Values found | Node probes mean ± SD | Original live copies/value |
+| --- | --- | --- | --- | --- | --- |
+| 0% | 1000 | 1000/1000 | 500/500 | 13.53 ± 0.15 | 10.00 |
+| 10% | 900 | 1000/1000 | 500/500 | 14.55 ± 0.35 | 9.05 |
+| 30% | 700 | 1000/1000 | 500/500 | 17.72 ± 0.38 | 6.99 |
+| 50% | 500 | 1000/1000 | 500/500 | 22.75 ± 0.51 | 4.98 |
+| 80% | 200 | 848/1000 | 397/500 | 33.93 ± 1.63 | 1.87 |
+| 90% | 100 | 415/1000 | 201/500 | 26.75 ± 2.21 | 0.93 |
+
+![Lookup work after abrupt departures](labs/experiments/churn-results/churn_cost.svg)
+
+*Figure 4. Mean logical probes, including failed RPCs, after abrupt departures. Bars show ±1 SD across seeds. Failed simulated RPCs return without real timeout waiting; this plot measures work, not elapsed latency.*
+
+Up to 50% removal, every measured lookup succeeded, but this resilience had a cost: node probes increased from 13.53 to 22.75, with 10.99 failed probes per lookup at 50%; node rounds increased from 4.96 to 8.61. Mean original copies fell from 10 to 4.98, reducing the margin against further departures. Value probes increased from 5.86 to 6.99. Thus success alone would hide both extra routing work and lost redundancy.
+
+![Routing accuracy and value availability after abrupt departures](labs/experiments/churn-results/churn_availability.svg)
+
+*Figure 5. Observed closest-peer accuracy, value availability and retrieval success. Rates pool the measured lookups at each removal fraction. Conditional retrieval success considers only keys with at least one original live replica.*
+
+At 80% removal, 54 of 500 values lost every original copy, while another 49 remained stored somewhere but were not found; retrieval succeeded for 397/500 (79.4%), or 397/446 (89.0%) of values with a live copy. At 90%, 184 values lost all copies and another 115 surviving values were not found, giving 201/500 (40.2%) overall and 201/316 (63.6%) conditional success. These are distinct failures: replication cannot recover a value after every copy disappears, whereas a routing miss leaves data present but undiscovered. Node-lookup accuracy also fell to 84.8% and 41.5%. The lower node-probe count at 90% than 80% removal is consistent with earlier exhaustion of reachable candidates; it does not demonstrate better efficiency. Value probes continued rising, reaching 23.04 and 8.16 rounds at 90%.
+
+#### Replica repair
+
+We then tested repair by calling the production `Republish` function once on selected original surviving holders: one source per retained key, selected before reads, with duplicate source nodes called only once. This is a controlled manual maintenance pass, not a measurement of the periodic timer or recovery time. A read can already have added one cached copy, so the before-repair snapshot and after-repair totals in the [full results](labs/experiments/churn-results/summary.md) distinguish those stages. Values with no original survivor remained lost. For retained values:
+
+*Table 5. Repair outcomes. Copy means weight seeds equally, averaging each seed's retained values; final-column counts pool retained values. Total live copies include read caches; closest-node placement is checked independently against all surviving IDs.*
+
+| Removed | Total live copies after repair/retained value | Copies at actual closest k/retained value | Retained values present at all k closest |
+| --- | --- | --- | --- |
+| 0% | 11.00 | 10.00 | 500/500 |
+| 10% | 10.67 | 9.67 | 381/500 |
+| 30% | 8.92 | 7.87 | 65/500 |
+| 50% | 6.95 | 5.78 | 9/500 |
+| 80% | 4.23 | 2.91 | 0/446 |
+| 90% | 3.12 | 2.19 | 0/316 |
+
+All joins and manual republish calls returned without errors, yet one pass did **not** restore k copies or correct placement for every retained key. The publisher chooses from discovered contacts; successful writes to those destinations do not prove global k-replica coverage. This reveals a maintenance limitation that the small restoration test does not expose. Refreshing routing knowledge, trying farther known peers after nearer contacts fail, and repeating maintenance are candidates for further evaluation; their recovery effectiveness was not measured here.
+
+#### Scope and reproducibility
+
+These results apply to random simultaneous crashes after healthy setup, with sequential queries and immediate simulated failures. They do not establish behavior under correlated failures, continuous arrivals/departures, UDP timeout latency, or a running refresh/replication schedule. Seeds fix addresses, workload and removal sets; join refresh targets use cryptographic randomness and goroutine scheduling can vary, so reruns need not reproduce every probe count exactly. The retained raw measurements and analyzer reproduce the reported tables without rerunning the networks.
 
 ## 8. Work beyond the minimum requirements
 
@@ -282,17 +405,33 @@ We implemented an injectable real DNS TXT resolver in addition to the allowed st
 
 ## 9. Limitations and possible improvements
 
-- Persistence and size: stores are in memory; loss of every copy loses the data. Disk persistence would improve restart recovery. The 4 KiB value limit constrains real packages. Chunking or a separate TCP data plane would support larger files and reduce reliance on fragmented UDP datagrams.
-- Freshness and consistency: a replica that misses an update may serve its old accepted pointer. A new node cannot detect a fork predating its first contact, and a non-replica reader keeps no mutable history checkpoint. Independent accepted histories are not reconciled by consensus. Explicit consistency rules and retained trust checkpoints would be needed for stronger guarantees.
-- Publication outcomes: writes can partially succeed, and a timeout does not distinguish rejection from late completion. `LookupData` also cannot always distinguish an absent value from exhausted or unreachable peers. Better outcome reporting, bounded asynchronous validation and explicit retry/recovery rules would improve operability.
+- **Persistence and size:** stores are in memory; loss of every copy loses the data. Disk persistence would improve restart recovery. The 4 KiB value limit constrains real packages. Chunking or a separate TCP data plane would support larger files and reduce reliance on fragmented UDP datagrams.
+- **Replica repair:** Section 7.4 shows that a single republish pass after abrupt departures can leave fewer than k live copies and incomplete placement, even without a returned error. Better discovery of replacement peers and evaluation of repeated refresh/replication passes are needed before claiming full recovery under churn.
+- **Freshness and consistency:** a replica that misses an update may serve its old accepted pointer. A new node cannot detect a fork predating its first contact, and a non-replica reader keeps no mutable history checkpoint. Independent accepted histories are not reconciled by consensus. Explicit consistency rules and retained trust checkpoints would be needed for stronger guarantees.
+- **Publication outcomes:** writes can partially succeed, and a timeout does not distinguish rejection from late completion. `LookupData` also cannot always distinguish an absent value from exhausted or unreachable peers. Better outcome reporting, bounded asynchronous validation and explicit retry/recovery rules would improve operability.
 - **Ownership and history:** there is no key rotation. Every record is checked against the domain's current public key, so replacing it invalidates signatures made with the previous key. Key transitions and authenticated history checkpoints would need further design.
 - **Owner-source availability:** there is no registry-level cache of DNS owner keys. Each validation queries its owner source; `DNSOwners` uses a 5 s timeout by default. The local file provider does cache the parsed table and reloads it when the file changes. Live DNS deployment and its trust configuration were not evaluated in the container demonstration.
 - **Single-host fake DNS:** the named volume containing the owners file is shared on one Docker host, not a cross-host filesystem. It assumes trusted administration and is suitable for our single-host demonstration. A multi-host deployment needs real DNS or another shared ownership service.
 - **History and version limits:** a walk can inspect at most 1000 records by default. Validation or catch-up that requires a longer walk rejects the pointer; a node with a recent accepted head may stop at that checkpoint. Numeric version gaps are allowed, but prerelease labels and the semantic meaning of version bumps are not implemented.
-- Concurrency and load: lookups wait for the slowest RPC in a round, and α limits one lookup rather than all requests at a node. A refresh scan can initiate up to 256 sequential lookups, delaying later passes or shutdown. Resource limits, better scheduling and bounded request cancellation would help under sustained load.
-- Evaluation scope: the container run was on one host, and the simulator omits real timeout delays in the mandatory experiments. Experiments with multiple hosts, correlated loss, lossy joins and controlled churn would give stronger deployment evidence.
+- **Concurrency and load:** α limits one lookup rather than all requests at a node. A refresh scan can initiate up to 256 sequential lookups, delaying later passes or shutdown. A node-wide request budget and bounded cancellation would help under sustained load. Section 9.1 discusses lookup scheduling separately.
+- **Evaluation scope:** the container run was on one host, and the simulator omits real timeout delays in the mandatory experiments. Section 7.4 measures abrupt departures, not sustained join/leave rates. Experiments with multiple hosts, correlated loss, lossy joins and continuous churn would give stronger deployment evidence.
+
+### 9.1 Why lookups wait, and an alternative
+
+Our [`lookupRound`](labs/kademlia/lookup.go) uses **strict parallelism**, an approach permitted by the lab: it launches at most α workers, then receives exactly one result from every worker before returning the batch to the coordinator. Consequently even a fast valid value response waits for a slow peer's response or final timeout. This structure gives the coordinator sole ownership of candidate state and ensures that no lookup RPC outlives its call, making concurrency and shutdown simpler. It introduces a barrier: one failed peer can delay progress through all three attempts, approximately 1.5 s with the default 500 ms deadline. Kademlia does not require this barrier. The [original paper, Section 2.2](https://www.scs.stanford.edu/~dm/home/papers/kpos.pdf), permits the next lookup step before all previous replies arrive; the [lab-linked design specification](https://xlattice.sourceforge.net/components/protocol/kademlia/specs.html) distinguishes scheduling approaches.
+
+A useful alternative is an event-driven coordinator with at most α RPCs in flight. It processes each response immediately, adds closer candidates and fills an available slot without waiting for the other requests. Value lookup can return on the first **validated** value. Node lookup still needs a convergence condition: a fast response alone does not establish the closest nodes, and pending responses that could change the final closest set must be resolved or timed out. This can retain a single owner of lookup state. It would require cancellation-aware RPCs, deadlines and cleanup for outstanding calls; our current `RPCClient` interface has no cancellation parameter. Returning early without cleanup leaves background work consuming sockets and goroutines. A permanently slow request also occupies a slot until completion or cancellation, so a bounded pipeline reduces the barrier but cannot eliminate every wait.
+
+| Policy | Smaller α | Larger α |
+| --- | --- | --- |
+| Current full-batch wait | Less speculative traffic, but more sequential rounds and greater dependence on each chosen peer. At α = 1 there is no alternative request running during a stall. | More paths are explored together and fewer rounds may be needed, but every batch still waits for its slowest request. A larger batch also has more chances to include a slow peer. |
+| Process responses as they arrive, cap in-flight work at α | Lower instantaneous load, but fewer slots remain productive when a peer stalls. | More fast responses can advance the lookup while others remain pending, at the cost of more simultaneous work and potentially redundant probes. Outstanding calls need cleanup on completion. |
+
+Neither increasing α nor removing the barrier guarantees fewer probes or lower latency in every topology. Larger α spends bandwidth, sockets and remote capacity to reduce dependence on individual paths; under heavy load it can itself create delay. Our measured packet-loss results illustrate the work/round trade-off, but contain no RPC delay measurements and do not compare schedulers. A fair follow-up would compare both policies at fixed α under heterogeneous latencies and failures, measuring median/tail latency, total transmissions and peak in-flight work across concurrent lookups. The asynchronous policy is a proposed improvement, not an implemented or measured result in this report.
 
 ## 10. Reproduction and sources
+
+### 10.1 Automated checks
 
 Run the automated checks from `labs/`. The coverage command measures all packages together, avoiding averages of separate package percentages:
 
@@ -303,12 +442,34 @@ go vet ./...
 go build -o /tmp/kadlab .
 ```
 
-To reproduce the complete experimental sweep and analysis from `labs/`:
+To check `--force` independently or replay the demonstration:
 
 ```sh
-go run ./cmd/experiments -out experiments/results
-python3 scripts/analyze.py experiments/results
+go test . -run '^TestPublishForceOverUDP$' -race -count=1 -v
+./scripts/force-demo.sh
 ```
+
+### 10.2 Experiments
+
+To rerun the original scalability and packet-loss sweeps without overwriting their recorded artifacts, from `labs/`:
+
+```sh
+go run ./cmd/experiments -exp scalability -out experiments/reproduced-results
+go run ./cmd/experiments -exp reliability -out experiments/reproduced-results
+python3 scripts/analyze.py experiments/reproduced-results
+```
+
+To reproduce the new 1000-node departure sweep and its analysis:
+
+```sh
+go run ./cmd/experiments -exp churn -seeds 10 -workers 4 -out experiments/churn-results
+python3 scripts/analyze.py experiments/churn-results
+python3 -m unittest discover -s scripts -p 'test_analyze.py'
+```
+
+The analyzer can regenerate the churn tables and plots directly from the retained `churn.jsonl`. `-quick -seeds 1 -out /tmp/kademlia-experiment-smoke` provides a smaller runner smoke test; it does not reproduce the full measurements.
+
+### 10.3 Container deployment
 
 For the single-host container deployment, initialize Docker Swarm if necessary, then build and deploy from `labs/`. The scale command gives one bootstrap plus 49 workers. `RPC_TIMEOUT=2s` is the setting supported by the short registry comparison:
 
@@ -320,4 +481,6 @@ docker service scale kademlia_kademliaNodes=49
 
 Interactive demonstration nodes must join `kademlia_kademlia_network`, mount `kademlia_registry_shared` at `/shared`, set `OWNERS_FILE=/shared/owners.json`, use their own `KEYS_DIR`, set `BOOTSTRAP=bootstrap:8000`, and set `RPC_TIMEOUT=2s` for the publisher comparison. The publisher must retain its private key between releases. Detailed commands and configuration are in the [running guide](labs/RUNNING.md).
 
-The report draws on the [lab specification](labs/LAB-SPEC.md), [Part 2 design](labs/PART2-DESIGN.md), [source code](labs/), [experimental summary and datasets](labs/experiments/results/summary.md), and our team implementation and verification notes dated 11–12 October 2026. The notes supply the integrated container observations; the committed datasets supply the experiment figures and tables.
+### 10.4 Sources
+
+The report draws on the [lab specification](labs/LAB-SPEC.md), [Part 2 design](labs/PART2-DESIGN.md), [source code](labs/), [original experimental results](labs/experiments/results/summary.md), [new churn measurements](labs/experiments/churn-results/summary.md), the [Kademlia paper](https://www.scs.stanford.edu/~dm/home/papers/kpos.pdf), the [lab-linked parallelism specification](https://xlattice.sourceforge.net/components/protocol/kademlia/specs.html), and [Go's UDP API documentation](https://pkg.go.dev/net#DialUDP). Team notes dated 11–12 October supply the historical container observations. The 16 October revision adds the real UDP force regression and the retained churn dataset; it does not claim a new 50-container demonstration.

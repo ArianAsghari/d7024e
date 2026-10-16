@@ -10,6 +10,10 @@ This description is a work in progress. Please report any errors you find.
 For this team's current implementation, setup commands, and a worked multi-node
 demo, see [Understanding and running the project](RUNNING.md).
 
+For a single step-by-step learning and presentation guide covering both lab
+parts, with commands, expected output, concepts, code references and questions,
+start with [Part 1 and Part 2 demo guide](DEMO-GUIDE.md).
+
 
 ## Introduction
 

@@ -32,13 +32,13 @@ Expect **bootstrap 1/1 + workers 49/49**. Leave S at the shell.
 Open five more terminal tabs, each in the repository's `labs` directory.
 Run each command in its own tab's **normal shell**, once:
 
-| Tab | Startup command |
-|---|---|
-| A | `scripts/demo-node.sh A` |
-| B | `scripts/demo-node.sh B` |
-| C | `scripts/demo-node.sh C` |
-| D | `scripts/demo-node.sh D` |
-| P | `scripts/demo-node.sh P` |
+| Tab | Startup command            |
+| --- | -------------------------- |
+| A   | `scripts/demo-node.sh A` |
+| B   | `scripts/demo-node.sh B` |
+| C   | `scripts/demo-node.sh C` |
+| D   | `scripts/demo-node.sh D` |
+| P   | `scripts/demo-node.sh P` |
 
 Wait for **Joined via ...** and **`>`** on every node. Keep them open.
 Start X only in step 10; starting it early can interfere with valid publications.
@@ -85,7 +85,7 @@ docker exec demo-B cat /out/part1.txt
 docker exec demo-B cmp /files/file1.txt /out/part1.txt && echo 'PASS: B downloaded file1 exactly'
 ```
 
-## 3. Part 1 — retrieve after the uploader exits
+## 3. Part 1 — retrieve after the uploader exits (**replication requirement—keeping data available despite churn**)
 
 **P:**
 

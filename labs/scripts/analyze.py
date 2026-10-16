@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Analyse the event logs written by `go run ./cmd/experiments`.
 
-Reads  <dir>/scalability.jsonl  and  <dir>/reliability.jsonl  (JSON lines) and
+Reads available scalability, reliability and churn JSON-lines logs and
 writes CSV tables, SVG figures and summary.md into the same directory.
 Standard library only (Python 3.8+), so the figures can be regenerated anywhere.
 
@@ -318,11 +318,131 @@ def reliability(directory, summary):
     summary.append("")
 
 
+def churn(directory, summary):
+    """Keep replica loss separate from failure to route to a surviving copy."""
+    path = os.path.join(directory, "churn.jsonl")
+    if not os.path.exists(path):
+        return
+    runs, grouped = [], defaultdict(list)
+    configs = set()
+    for run, records in read_runs(path):
+        configs.add((run["n"], run["k"], run["alpha"], run["node_lookups"], run["values"]))
+        node = [r for r in records if r["ev"] == "churn_lookup" and r["kind"] == "node"]
+        value = [r for r in records if r["ev"] == "churn_lookup" and r["kind"] == "value"]
+        replicas = [r for r in records if r["ev"] == "churn_replicas"]
+        available = [r for r in value if r["surviving_replicas"] > 0]
+        retained = [r for r in replicas if r["after_crash"] > 0]
+        repair = next(r for r in records if r["ev"] == "churn_repair")
+        row = {"n": run["n"], "seed": run["seed"], "crash_fraction": run["crash_fraction"],
+               "alive": run["alive"], "join_failures": run["join_failures"],
+               "node_lookups": len(node), "node_exact": sum(r["exact_closest"] for r in node),
+               "value_lookups": len(value), "values_available": len(available),
+               "values_found": sum(r["success"] for r in value),
+               "routing_misses": sum(not r["success"] for r in available), "repair_errors": repair["errors"]}
+        for kind, lookups in (("node", node), ("value", value)):
+            for metric in ("probes", "rounds", "failed_probes"):
+                row[f"{kind}_{metric}"] = statistics.fmean(r[metric] for r in lookups)
+        for stage in ("before_crash", "after_crash", "before_repair", "after_repair"):
+            row[f"replicas_{stage}"] = statistics.fmean(r[stage] for r in replicas)
+        row["retained_replicas_after_repair"] = statistics.fmean(r["after_repair"] for r in retained) if retained else 0
+        row["closest_live_after_repair"] = statistics.fmean(r["closest_live_after_repair"] for r in retained) if retained else 0
+        row["keys_restored_to_k_closest"] = sum(r["closest_live_after_repair"] == run["k"] for r in retained)
+        runs.append(row)
+        grouped[run["crash_fraction"]].append(row)
+    if not runs:
+        raise ValueError("churn log contains no runs")
+    if len(configs) != 1:
+        raise ValueError("churn analysis requires one N/k/alpha/workload configuration per directory")
+    n, k, alpha, node_per_seed, values_per_seed = configs.pop()
+    write_csv(os.path.join(directory, "churn_runs.csv"), runs)
+
+    rows = []
+    for fraction, seeds in sorted(grouped.items()):
+        row = {"crash_fraction": fraction, "alive": seeds[0]["alive"], "seeds": len(seeds)}
+        for key in ("node_lookups", "node_exact", "value_lookups", "values_available", "values_found", "routing_misses",
+                    "join_failures", "repair_errors", "keys_restored_to_k_closest"):
+            row[key] = sum(r[key] for r in seeds)
+        row["node_exact_rate"] = row["node_exact"] / row["node_lookups"]
+        row["value_success_rate"] = row["values_found"] / row["value_lookups"]
+        row["value_available_rate"] = row["values_available"] / row["value_lookups"]
+        row["available_value_success_rate"] = ((row["values_available"] - row["routing_misses"]) / row["values_available"]
+                                               if row["values_available"] else 0)
+        for key in ("node_probes", "node_rounds", "node_failed_probes", "value_probes", "value_rounds", "value_failed_probes",
+                    "replicas_before_crash", "replicas_after_crash", "replicas_before_repair", "replicas_after_repair",
+                    "retained_replicas_after_repair", "closest_live_after_repair"):
+            mean, std = mean_std(r[key] for r in seeds)
+            row[key], row[key + "_std"] = round(mean, 4), round(std, 4)
+        rows.append(row)
+    write_csv(os.path.join(directory, "churn.csv"), rows)
+
+    def points(metric, scale=1):
+        return [(100 * r["crash_fraction"], scale * r[metric], scale * r.get(metric + "_std", 0)) for r in rows]
+
+    svg_chart(os.path.join(directory, "churn_cost.svg"), f"Lookup cost after abrupt node departures (initial N={n})",
+              "initial nodes crashed (%)", "logical RPC probes per lookup", [
+                  {"label": "FIND_NODE: all probes", "points": points("node_probes")},
+                  {"label": "FIND_NODE: failed probes", "points": points("node_failed_probes")},
+                  {"label": "FIND_VALUE: all probes", "points": points("value_probes")},
+                  {"label": "FIND_VALUE: failed probes", "points": points("value_failed_probes")},
+              ], ymin=0, note="Means over seeds; bars: +/- 1 seed standard deviation. No simulated timeout delay.")
+    svg_chart(os.path.join(directory, "churn_availability.svg"), "Routing and value availability after abrupt departures",
+              "initial nodes crashed (%)", "success or availability (%)", [
+                  {"label": "FIND_NODE finds globally closest live peer", "points": points("node_exact_rate", 100)},
+                  {"label": "values with an original live replica", "points": points("value_available_rate", 100)},
+                  {"label": "FIND_VALUE success (all values)", "points": points("value_success_rate", 100)},
+                  {"label": "FIND_VALUE success given a live replica", "points": points("available_value_success_rate", 100)},
+              ], ymin=0, ymax=100, legend="lower",
+              note=f"Each seed: {node_per_seed} node and {values_per_seed} distinct value lookups; counts in churn.csv.")
+    svg_chart(os.path.join(directory, "churn_replicas.svg"), "Original replicas lost and surviving values repaired",
+              "initial nodes crashed (%)", "mean live copies per value", [
+                  {"label": "before crash: all values", "points": points("replicas_before_crash")},
+                  {"label": "immediately after crash: all values", "points": points("replicas_after_crash")},
+                  {"label": "after repair: surviving values only", "points": points("retained_replicas_after_repair")},
+                  {"label": "at actual closest k after repair: surviving values", "points": points("closest_live_after_repair")},
+              ], ymin=0, legend="lower",
+              note="Reads add caches before manual repair; total copies can exceed k. Lost values cannot be repaired.")
+
+    seed_counts = ", ".join(str(count) for count in sorted({r["seeds"] for r in rows}))
+    seed_word = "seed" if seed_counts == "1" else "seeds"
+    summary.append(f"## Experiment 3 - abrupt departures from {n} nodes\n")
+    summary.append(f"k = {k}, alpha = {alpha}; {seed_counts} {seed_word} per fraction, {node_per_seed} node lookups and "
+                   f"{values_per_seed} distinct value lookups per seed. "
+                   "Healthy join/store precedes random abrupt removals. There are no arrivals, packet loss, "
+                   "real timeout delays or periodic maintenance during measurement. Each value reader is a live non-holder. "
+                   "This is a crash-fraction sweep, not a measured continuous churn rate.\n")
+    summary.append("| crashed | alive | closest live node found | value found | value has live copy | routing misses with live copy |")
+    summary.append("|---|---:|---:|---:|---:|---:|")
+    for r in rows:
+        summary.append(f"| {100*r['crash_fraction']:.0f}% | {r['alive']} | {r['node_exact']}/{r['node_lookups']} | "
+                       f"{r['values_found']}/{r['value_lookups']} | {r['values_available']}/{r['value_lookups']} | {r['routing_misses']} |")
+    summary.append("\nLookup cost includes successes and failures; mean +/- standard deviation of per-seed means.\n")
+    summary.append("| crashed | node probes | failed node probes | node rounds | value probes | failed value probes | value rounds |")
+    summary.append("|---|---:|---:|---:|---:|---:|---:|")
+    for r in rows:
+        cells = [f"{r[key]:.2f} +/- {r[key + '_std']:.2f}" for key in
+                 ("node_probes", "node_failed_probes", "node_rounds", "value_probes", "value_failed_probes", "value_rounds")]
+        summary.append(f"| {100*r['crash_fraction']:.0f}% | " + " | ".join(cells) + " |")
+    summary.append("\nRepair sources are selected from original surviving holders before reads, one per retained key, "
+                   "deduplicated by node. Each selected node calls Republish once after the lookup workload. "
+                   "Reads cache immutable values, so post-repair copy counts include caches and can exceed k. "
+                   "Placement is checked against the globally closest live k, independently of the routing tables.\n")
+    summary.append("| crashed | copies immediately after crash (all keys) | copies after repair (retained keys) | copies at true closest k after repair (retained keys) | retained keys restored at all k closest |")
+    summary.append("|---|---:|---:|---:|---:|")
+    for r in rows:
+        summary.append(f"| {100*r['crash_fraction']:.0f}% | {r['replicas_after_crash']:.2f} | "
+                       f"{r['retained_replicas_after_repair']:.2f} | {r['closest_live_after_repair']:.2f} | "
+                       f"{r['keys_restored_to_k_closest']}/{r['values_available']} |")
+    summary.append(f"\nJoin failures: {sum(r['join_failures'] for r in rows)}; manual repair errors: {sum(r['repair_errors'] for r in rows)}. "
+                   "Data: `churn.jsonl`, `churn_runs.csv`, `churn.csv`. Figures: `churn_cost.svg`, "
+                   "`churn_availability.svg`, `churn_replicas.svg`.\n")
+
+
 def main():
     directory = sys.argv[1] if len(sys.argv) > 1 else "experiments/results"
     summary = ["# Experiment results (generated by scripts/analyze.py)\n"]
     scalability(directory, summary)
     reliability(directory, summary)
+    churn(directory, summary)
     with open(os.path.join(directory, "summary.md"), "w") as handle:
         handle.write("\n".join(summary) + "\n")
     print("\n".join(summary))

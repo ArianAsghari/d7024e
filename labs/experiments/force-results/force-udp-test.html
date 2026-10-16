@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Terminal</title>
+<style>
+* { box-sizing: border-box; }
+html { background: #000; }
+body { margin: 0; padding: 16px; background: #000; color: #eee; }
+.terminal { overflow: hidden; border: 1px solid #484848; border-radius: 10px; background: #000; }
+.titlebar { position: relative; height: 40px; border-bottom: 1px solid #111; background: #2c2c2c; color: #d7d7d7; text-align: center; font: 600 13px/39px -apple-system, BlinkMacSystemFont, Arial, sans-serif; }
+.controls { position: absolute; top: 13px; left: 15px; display: flex; gap: 8px; }
+.control { display: block; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+.close { background: #ff5f57; }
+.minimize { background: #febc2e; }
+.zoom { background: #28c840; }
+.output { padding: 26px 28px; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 20px/1.55 Menlo, Monaco, monospace; font-variant-ligatures: none; }
+.command { color: #a7e3a1; }
+</style>
+<body>
+<div class="terminal">
+<div class="titlebar"><div class="controls" aria-hidden="true"><span class="control close"></span><span class="control minimize"></span><span class="control zoom"></span></div>Terminal</div>
+<div class="output"><pre><span class="command">$ go test . -run &#x27;^TestPublishForceOverUDP$&#x27; -race -count=1 -v
+</span>=== RUN   TestPublishForceOverUDP
+=== RUN   TestPublishForceOverUDP/rollback
+    registry_cli_test.go:456: publish --force example.com:tool:1.5.0 invalid.bin
+        publish failed: updating the latest pointer: update would roll back to an older version: 1.5.0 is older than the current 2.0.0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+=== RUN   TestPublishForceOverUDP/same-version_fork
+    registry_cli_test.go:456: publish --force example.com:tool:2.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record b3f0eefc…5e49, not 597c7e0b…16af (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+=== RUN   TestPublishForceOverUDP/older-parent_fork
+    registry_cli_test.go:456: publish --force --prev=1.0.0 example.com:tool:3.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record f9e7108f…04b7) without meeting the current record b3f0eefc…5e49 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+=== RUN   TestPublishForceOverUDP/same-version_predecessor
+    registry_cli_test.go:456: publish --force --prev=2.0.0 example.com:tool:2.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record b3f0eefc…5e49, not 4a020150…da84 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+--- PASS: TestPublishForceOverUDP (0.10s)
+    --- PASS: TestPublishForceOverUDP/rollback (0.01s)
+    --- PASS: TestPublishForceOverUDP/same-version_fork (0.01s)
+    --- PASS: TestPublishForceOverUDP/older-parent_fork (0.01s)
+    --- PASS: TestPublishForceOverUDP/same-version_predecessor (0.01s)
+PASS
+ok  	d7024e	1.652s
+</pre></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,20 @@
+=== RUN   TestPublishForceOverUDP
+=== RUN   TestPublishForceOverUDP/rollback
+    registry_cli_test.go:456: publish --force example.com:tool:1.5.0 invalid.bin
+        publish failed: updating the latest pointer: update would roll back to an older version: 1.5.0 is older than the current 2.0.0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+=== RUN   TestPublishForceOverUDP/same-version_fork
+    registry_cli_test.go:456: publish --force example.com:tool:2.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record b3f0eefc…5e49, not 597c7e0b…16af (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+=== RUN   TestPublishForceOverUDP/older-parent_fork
+    registry_cli_test.go:456: publish --force --prev=1.0.0 example.com:tool:3.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record f9e7108f…04b7) without meeting the current record b3f0eefc…5e49 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+=== RUN   TestPublishForceOverUDP/same-version_predecessor
+    registry_cli_test.go:456: publish --force --prev=2.0.0 example.com:tool:2.0.0 invalid.bin
+        publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record b3f0eefc…5e49, not 4a020150…da84 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+--- PASS: TestPublishForceOverUDP (0.10s)
+    --- PASS: TestPublishForceOverUDP/rollback (0.01s)
+    --- PASS: TestPublishForceOverUDP/same-version_fork (0.01s)
+    --- PASS: TestPublishForceOverUDP/older-parent_fork (0.01s)
+    --- PASS: TestPublishForceOverUDP/same-version_predecessor (0.01s)
+PASS
+ok  	d7024e	1.652s

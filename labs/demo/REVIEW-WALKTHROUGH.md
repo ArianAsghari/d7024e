@@ -24,22 +24,22 @@ extensions to run live.
 
 ### Seven terminal tabs
 
-| Tab | Purpose | What runs there |
-|---|---|---|
-| S | Control shell: Docker, file checks, tests | Normal host shell throughout |
-| A | Legitimate owner and package publisher | Node A |
-| B | Initial downloader; unauthorized publication attempt | Node B |
-| C | Reader that sees version 1, then updates to version 2 | Node C |
-| D | Reader that installs old and explicitly selected versions | Node D |
-| X | Optional rogue publisher with a separate fake ownership file | Start only in section 8B |
-| P | Part 1 publisher; deliberately exits during the demo | Node P |
+| Tab | Purpose                                                      | What runs there              |
+| --- | ------------------------------------------------------------ | ---------------------------- |
+| S   | Control shell: Docker, file checks, tests                    | Normal host shell throughout |
+| A   | Legitimate owner and package publisher                       | Node A                       |
+| B   | Initial downloader; unauthorized publication attempt         | Node B                       |
+| C   | Reader that sees version 1, then updates to version 2        | Node C                       |
+| D   | Reader that installs old and explicitly selected versions    | Node D                       |
+| X   | Optional rogue publisher with a separate fake ownership file | Start only in section 8B     |
+| P   | Part 1 publisher; deliberately exits during the demo         | Node P                       |
 
 All host commands below assume the shell is in this repository's **labs** directory.
 From the repository root, run:
 
-~~~sh
+```sh
 cd labs
-~~~
+```
 
 If the prompt already ends in **labs %**, skip that command. Enter the same labs
 directory in every new tab. No temporary checkout or machine-specific path is needed.
@@ -60,12 +60,12 @@ repeating key generation and publication.
 
 **S — normal shell:**
 
-~~~sh
+```sh
 scripts/demo-down.sh
 printf 'file5: the fifth release of the demo package\n' > demo/files/file5.txt
 scripts/demo-up.sh
 docker service ls
-~~~
+```
 
 The extra file5 fixture makes version 5 visibly different from versions 1 and 2. The
 original scripts already mount the whole demo/files directory into every interactive
@@ -75,12 +75,12 @@ Wait for bootstrap **1/1** and workers **49/49**. These are the 50 background no
 Run the following command in each corresponding tab, **once per tab**:
 
 | Tab | Command at the normal shell prompt |
-|---|---|
-| A | scripts/demo-node.sh A |
-| B | scripts/demo-node.sh B |
-| C | scripts/demo-node.sh C |
-| D | scripts/demo-node.sh D |
-| P | scripts/demo-node.sh P |
+| --- | ---------------------------------- |
+| A   | scripts/demo-node.sh A             |
+| B   | scripts/demo-node.sh B             |
+| C   | scripts/demo-node.sh C             |
+| D   | scripts/demo-node.sh D             |
+| P   | scripts/demo-node.sh P             |
 
 Wait for every tab to print **Joined via ...** and show **>**. Starting Kademlia node
 alone does not mean joining has finished. Keep A/B/C/D open throughout the main
@@ -96,19 +96,19 @@ attack, after all legitimate publications and history checks are complete.
 
 **S — normal shell:**
 
-~~~sh
+```sh
 docker exec demo-A cat /files/file1.txt /files/file2.txt /files/file3.txt /files/file5.txt
 docker exec demo-A sha256sum /files/file1.txt /files/file2.txt /files/file5.txt
-~~~
+```
 
 Expected file contents, one line per file:
 
-~~~text
+```text
 file1: the first release of the demo package
 file2: the second release of the demo package
 file3: a different file that tries to replace release 2
 file5: the fifth release of the demo package
-~~~
+```
 
 The filename does not set the registry version. The version argument to publish does.
 We use file3 as replacement/attack content, and create file5 for a legitimate release.
@@ -118,13 +118,14 @@ We use file3 as replacement/attack content, and create file5 for a legitimate re
 **P — node prompt:**
 
 <!-- node: P -->
-~~~text
+
+```text
 ping bootstrap:8000
 show rt
 show ds
 put /files/file1.txt
 show ds
-~~~
+```
 
 **Show and explain:** ping prints a pong and round-trip time; the routing table has
 contacts learned through joining. The bootstrap is an initial contact, not a central
@@ -145,9 +146,9 @@ the bootstrap setting; the later ping does not create the entire network.
 
 Put prints the full SHA-256 key. For the unchanged supplied file1, it is:
 
-~~~text
+```text
 448969d3a84becc3c012fda5afe84e6cdf62fe4b336200b49a510be846a5d2fb
-~~~
+```
 
 Compare it with S's sha256sum output. The following get commands use that exact key;
 if anyone edits file1, use the new key actually printed by put instead.
@@ -155,19 +156,21 @@ if anyone edits file1, use the new key actually printed by put instead.
 **B — node prompt:**
 
 <!-- node: B -->
-~~~text
+
+```text
 show ds
 get 448969d3a84becc3c012fda5afe84e6cdf62fe4b336200b49a510be846a5d2fb /out/part1.txt
 show ds
-~~~
+```
 
 **S — verify B's downloaded bytes:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-B cat /out/part1.txt
 docker exec demo-B cmp /files/file1.txt /out/part1.txt && echo 'PASS: B downloaded file1 exactly'
-~~~
+```
 
 Cmp compares the actual bytes. It is silent on success; the following PASS is printed
 only if the comparison succeeds. A missing file or differing contents must not be
@@ -180,37 +183,41 @@ read cache. If the first get was remote, repeating it locally demonstrates cachi
 **B — node prompt:**
 
 <!-- node: B -->
-~~~text
+
+```text
 get 448969d3a84becc3c012fda5afe84e6cdf62fe4b336200b49a510be846a5d2fb
-~~~
+```
 
 **P — node prompt, deliberately stop the publisher:**
 
 <!-- node: P -->
-~~~text
+
+```text
 exit
-~~~
+```
 
 **C — node prompt, retrieve after P has exited:**
 
 <!-- node: C -->
-~~~text
+
+```text
 get 448969d3a84becc3c012fda5afe84e6cdf62fe4b336200b49a510be846a5d2fb /out/after-p-exit.txt
-~~~
+```
 
 **S — prove P is gone and C still retrieved the bytes:**
 
-~~~sh
+```sh
 docker ps --filter 'name=^/demo-P$' --format '{{.Names}}'
-~~~
+```
 
 That command should print no container name. Then:
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-C cat /out/after-p-exit.txt
 docker exec demo-C cmp /files/file1.txt /out/after-p-exit.txt && echo 'PASS: file1 survives P leaving'
-~~~
+```
 
 **Say:** copies outlive the original uploader. This demonstrates availability from
 replicas/caches after P exits. It does not demonstrate periodic repair of replicas;
@@ -221,37 +228,41 @@ that is separate maintenance behavior, covered by the tests in section 10.
 **A — node prompt:**
 
 <!-- node: A -->
-~~~text
+
+```text
 keygen example.com
 show dns example.com
 publish example.com:tool:1.0.0 /files/file1.txt
 show example.com:tool
-~~~
+```
 
 **B — node prompt:**
 
 <!-- node: B -->
-~~~text
+
+```text
 show dns example.com
 install example.com:tool:latest /out/latest-v1.txt
-~~~
+```
 
 **C — node prompt, also read version 1 before the update:**
 
 <!-- node: C -->
-~~~text
+
+```text
 install example.com:tool:latest /out/latest-v1.txt
-~~~
+```
 
 **S — inspect and verify both installations:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-B cat /out/latest-v1.txt
 docker exec demo-B cmp /files/file1.txt /out/latest-v1.txt && echo 'PASS: B installed version 1 bytes'
 docker exec demo-C cat /out/latest-v1.txt
 docker exec demo-C cmp /files/file1.txt /out/latest-v1.txt && echo 'PASS: C installed version 1 bytes'
-~~~
+```
 
 Expect both install messages to identify **1.0.0**, and both files to contain the
 file1 text. A and B should display the same trusted owner public key/fingerprint.
@@ -269,37 +280,41 @@ IP, while the registry's fake owners.json maps a package domain to a public key.
 **A — node prompt:**
 
 <!-- node: A -->
-~~~text
+
+```text
 publish example.com:tool:2.0.0 /files/file2.txt
 show example.com:tool
-~~~
+```
 
 **C — node prompt, the same reader that previously installed latest as 1:**
 
 <!-- node: C -->
-~~~text
+
+```text
 install example.com:tool:latest /out/latest-v2.txt
 show example.com:tool
-~~~
+```
 
 **D — node prompt, explicitly request the older release:**
 
 <!-- node: D -->
-~~~text
+
+```text
 install example.com:tool:1.0.0 /out/old-v1.txt
-~~~
+```
 
 **S — show the actual C and D files next to their expected originals:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-C cat /out/latest-v2.txt
 docker exec demo-D cat /out/old-v1.txt
 docker exec demo-C cmp /files/file2.txt /out/latest-v2.txt && echo 'PASS: C latest is version 2 bytes'
 docker exec demo-D cmp /files/file1.txt /out/old-v1.txt && echo 'PASS: D old version is still version 1 bytes'
 docker exec demo-C sha256sum /files/file2.txt /out/latest-v2.txt
 docker exec demo-D sha256sum /files/file1.txt /out/old-v1.txt
-~~~
+```
 
 Expected: C's file contains the **second release**, D's file contains the **first
 release**, and each original/download hash pair matches. The two release hashes
@@ -308,19 +323,21 @@ differ. The registry install messages must also name 2.0.0 and 1.0.0 respectivel
 **D — additionally demonstrate installing a specific newer version:**
 
 <!-- node: D -->
-~~~text
+
+```text
 install example.com:tool:2.0.0 /out/pinned-v2.txt
 show example.com:tool
 show ds
-~~~
+```
 
 **S — verify D's explicit version 2 installation:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-D cat /out/pinned-v2.txt
 docker exec demo-D cmp /files/file2.txt /out/pinned-v2.txt && echo 'PASS: D explicitly installed version 2 bytes'
-~~~
+```
 
 Expected history is **2.0.0 → 1.0.0**. Separate output filenames keep old downloads
 available for inspection; reusing one filename would overwrite that local output file.
@@ -331,7 +348,7 @@ Show ds inventories one node's local DHT objects. Show example.com:tool fetches 
 displays the package history. Install retrieves a selected release; it does not print
 the history automatically.
 
-~~~text
+```text
 stable latest-pointer key: SHA256("example.com:tool:latest")
           |
           v
@@ -342,7 +359,7 @@ record 2.0.0 -------- previous-record hash --------> record 1.0.0
     |                                                   |
     v                                                   v
 file2 blob                                          file1 blob
-~~~
+```
 
 Blobs and signed records have content-derived hash keys. The latest pointer has a
 name-derived key so its value can change without changing how readers find it.
@@ -368,10 +385,11 @@ private key. Use a different package name so absence is easy to inspect.
 **B — node prompt:**
 
 <!-- node: B -->
-~~~text
+
+```text
 publish example.com:intrusion:1.0.0 /files/file3.txt
 keygen example.com
-~~~
+```
 
 Expected: publication fails with **no private key for example.com**; keygen refuses
 to replace an existing owner. Do not delete or overwrite the shared ownership file.
@@ -379,11 +397,12 @@ to replace an existing owner. Do not delete or overwrite the shared ownership fi
 **C — node prompt:**
 
 <!-- node: C -->
-~~~text
+
+```text
 show dns example.com
 show example.com:intrusion
 install example.com:intrusion:latest /out/unauthorized.txt
-~~~
+```
 
 Expected: the trusted owner key is unchanged, and the intrusion package cannot be
 shown or installed in this controlled network.
@@ -391,9 +410,10 @@ shown or installed in this controlled network.
 **S — show that install did not produce a file:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-C sh -c 'test ! -e /out/unauthorized.txt && echo "PASS: unauthorized install produced no file"'
-~~~
+```
 
 **Say:** this first attempt was refused locally because B could not sign. Section 8
 adds an actual wrong-key signature sent to the receiving replicas.
@@ -403,10 +423,11 @@ adds an actual wrong-key signature sent to the receiving replicas.
 **A — node prompt, first ordinary publication, then forced publication:**
 
 <!-- node: A -->
-~~~text
+
+```text
 publish example.com:tool:2.0.0 /files/file3.txt
 publish --force example.com:tool:2.0.0 /files/file3.txt
-~~~
+```
 
 Expected: both fail as forks. The first is caught by the publishing client; the forced
 attempt reaches receiver validation and should report refusals by the replicas.
@@ -414,18 +435,20 @@ attempt reaches receiver validation and should report refusals by the replicas.
 **C — node prompt, check accepted state after the attack:**
 
 <!-- node: C -->
-~~~text
+
+```text
 show example.com:tool
 install example.com:tool:latest /out/after-fork-v2.txt
-~~~
+```
 
 **S — verify it is still exactly file2:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-C cat /out/after-fork-v2.txt
 docker exec demo-C cmp /files/file2.txt /out/after-fork-v2.txt && echo 'PASS: fork attempt left version 2 bytes unchanged'
-~~~
+```
 
 Expect latest **2.0.0**, history **2 → 1**, and the second-release text. Since file2
 and file3 differ, matching file2 also establishes that the proposed replacement was
@@ -444,10 +467,11 @@ that no raw bytes from the attempt exist anywhere.
 **A — node prompt, ordinary valid publication:**
 
 <!-- node: A -->
-~~~text
+
+```text
 publish example.com:tool:5.0.0 /files/file5.txt
 show example.com:tool
-~~~
+```
 
 Expected: success without force, with history **5.0.0 → 2.0.0 → 1.0.0**. Versions
 must increase but need not be consecutive integers. By default the new record points
@@ -456,25 +480,28 @@ to the currently accepted latest record, here version 2.
 **D — node prompt:**
 
 <!-- node: D -->
-~~~text
+
+```text
 install example.com:tool:latest /out/latest-v5.txt
-~~~
+```
 
 **S — verify the new release before attempting rollback:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-D cat /out/latest-v5.txt
 docker exec demo-D cmp /files/file5.txt /out/latest-v5.txt && echo 'PASS: D latest is version 5 bytes'
-~~~
+```
 
 **A — node prompt, attempt the older versions after 5 was accepted:**
 
 <!-- node: A -->
-~~~text
+
+```text
 publish --force example.com:tool:3.0.0 /files/file3.txt
 publish --force example.com:tool:4.0.0 /files/file3.txt
-~~~
+```
 
 Expected: both fail as rollbacks. In the stable 50-node rehearsal, expect the k = 10
 pointer replicas to refuse them. A timeout is not equivalent to an explicit refusal.
@@ -482,12 +509,13 @@ pointer replicas to refuse them. A timeout is not equivalent to an explicit refu
 **D — node prompt, inspect the result after both attempts:**
 
 <!-- node: D -->
-~~~text
+
+```text
 show example.com:tool
 install example.com:tool:latest /out/after-rollback-v5.txt
 install example.com:tool:3.0.0 /out/rejected-v3.txt
 install example.com:tool:4.0.0 /out/rejected-v4.txt
-~~~
+```
 
 Expected: latest still installs as **5.0.0**, history remains **5 → 2 → 1**, and
 versions 3 and 4 are not found in that history.
@@ -495,11 +523,12 @@ versions 3 and 4 are not found in that history.
 **S — verify unchanged latest bytes and absence of rejected outputs:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-D cat /out/after-rollback-v5.txt
 docker exec demo-D cmp /files/file5.txt /out/after-rollback-v5.txt && echo 'PASS: rollback attempts left version 5 bytes unchanged'
 docker exec demo-D sh -c 'test ! -e /out/rejected-v3.txt && test ! -e /out/rejected-v4.txt && echo "PASS: rejected versions produced no installed files"'
-~~~
+```
 
 This completes the lecturer's corrected main sequence with visible file evidence.
 
@@ -512,9 +541,10 @@ The current accepted head must still be version 5 from section 7.
 **A — node prompt:**
 
 <!-- node: A -->
-~~~text
+
+```text
 publish --force --prev=2.0.0 example.com:tool:6.0.0 /files/file3.txt
-~~~
+```
 
 Expected: fork rejection. Although 6 is newer than 5, the proposed link **6 → 2**
 bypasses the exact accepted version-5 record. Its ancestry does not extend the head.
@@ -522,18 +552,20 @@ bypasses the exact accepted version-5 record. Its ancestry does not extend the h
 **C — node prompt:**
 
 <!-- node: C -->
-~~~text
+
+```text
 show example.com:tool
 install example.com:tool:latest /out/after-branch-v5.txt
-~~~
+```
 
 **S — verify the accepted content again:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-C cat /out/after-branch-v5.txt
 docker exec demo-C cmp /files/file5.txt /out/after-branch-v5.txt && echo 'PASS: higher-version fork left version 5 unchanged'
-~~~
+```
 
 ### B. Wrong-key signature rejected by receivers
 
@@ -542,9 +574,9 @@ Do not publish further legitimate releases during this optional scenario.
 
 **X — normal shell, start the reserved node now:**
 
-~~~sh
+```sh
 scripts/demo-node.sh X
-~~~
+```
 
 Wait for Joined via and the node prompt before continuing.
 
@@ -554,11 +586,12 @@ shared file used by A/B/C/D and the 50 background nodes.
 **X — node prompt:**
 
 <!-- node: X -->
-~~~text
+
+```text
 keygen example.com
 show dns example.com
 publish example.com:evil:1.0.0 /files/file3.txt
-~~~
+```
 
 Expected: X can sign using its own private key, but the honest receiving replicas
 reject the pointer because it is not signed by the owner they trust for example.com.
@@ -568,18 +601,20 @@ it valid to the honest nodes. Show their refusal and C's failed install below.
 **C — node prompt:**
 
 <!-- node: C -->
-~~~text
+
+```text
 show dns example.com
 show example.com:evil
 install example.com:evil:latest /out/rogue.txt
-~~~
+```
 
 **S — confirm no rogue installation:**
 
 <!-- verify -->
-~~~sh
+
+```sh
 docker exec demo-C sh -c 'test ! -e /out/rogue.txt && echo "PASS: wrong-key publication cannot be installed"'
-~~~
+```
 
 Contrast the two displayed public keys. A valid signature under X's invented key is
 insufficient: receivers verify against the trusted key for the domain.
@@ -588,10 +623,10 @@ insufficient: receivers verify against the trusted key for the domain.
 
 Draw a separate hypothetical history where versions 3 and 4 really were published:
 
-~~~text
+```text
 incoming history: 5 → 4 → 3 → [2] → 1
 known checkpoint: the exact record hash at [2]
-~~~
+```
 
 The node receives pointer 5, verifies ownership/signature, and follows the hashes of
 its version records backward. It calls LookupData to fetch missing records, verifies
@@ -625,43 +660,43 @@ applies, and every member should be able to demonstrate and explain each require
 Keep supporting test output, plots and source locations ready rather than promising
 that the short live sequence itself proves every engineering property.
 
-| Requirement or topic | Evidence to have ready |
-|---|---|
-| 50 separate node containers | Service listing showing 1 bootstrap + 49 workers; interactive nodes are additional |
-| Part 1 commands and routing | Section 2: ping/RTT, put/hash, get/source, exit, show rt, show ds |
-| Full join and bucket refresh | Explain auto-bootstrap; show Join in maintenance.go and its focused test |
-| XOR and iterative lookup; adjustable alpha and k | Explain node IDs vs file keys; alpha=3 concurrent probes, k=10 replicas/bucket capacity; code/tests and experiment plots |
-| UDP RPC design | PING, STORE, FIND_NODE, FIND_VALUE; random request IDs, matching replies, deadlines and retries; network.go |
-| Immutable integrity and explicit size limit | File/hash checks; store/lookup rejection tests; documented 4096-byte limit, exceeding the required 255-byte minimum |
-| Initial replication vs periodic repair under churn | Section 2 shows surviving copies; separate maintenance tests prove periodic republishing and replica restoration |
-| At least 1000 simulated nodes, including Part 2 | Both named thousand-node scenarios below; they use the simulated transport, not 1000 containers |
-| At least 80% statement coverage and race-clean tests | Full test run with coverage and -race; read the actual total from the generated profile |
-| Ownership, signatures and registry CLI | Sections 3, 5 and optional 8B; show dns and decoded show ds; private keys stay private |
-| No fork and no rollback | Sections 6–7 and optional 8A; inspect history and actual bytes after each refusal |
-| Missing-history catch-up | Section 9 explanation plus focused tests; lecturer explicitly waived the live scenario |
-| Mutable pointer cache fix | C reads before/after update; targeted tests select non-replica readers and publishers |
-| Thread safety | Explain mutex-protected state, validation/network fetches outside storage locks, and rechecking the current value before committing |
-| Structured instrumentation | Lookup probe and outcome events; experiment JSONL logs and external Python analysis |
-| Two required experiments | Scalability vs network size and retrieval success vs packet loss; setup, seeds, variation, expectations and limitations |
-| Written report and administration | Group/members/repository, architecture/libraries, thread safety, limits, experiments; verify Canvas submission and review signup separately |
+| Requirement or topic                                 | Evidence to have ready                                                                                                                      |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 50 separate node containers                          | Service listing showing 1 bootstrap + 49 workers; interactive nodes are additional                                                          |
+| Part 1 commands and routing                          | Section 2: ping/RTT, put/hash, get/source, exit, show rt, show ds                                                                           |
+| Full join and bucket refresh                         | Explain auto-bootstrap; show Join in maintenance.go and its focused test                                                                    |
+| XOR and iterative lookup; adjustable alpha and k     | Explain node IDs vs file keys; alpha=3 concurrent probes, k=10 replicas/bucket capacity; code/tests and experiment plots                    |
+| UDP RPC design                                       | PING, STORE, FIND_NODE, FIND_VALUE; random request IDs, matching replies, deadlines and retries; network.go                                 |
+| Immutable integrity and explicit size limit          | File/hash checks; store/lookup rejection tests; documented 4096-byte limit, exceeding the required 255-byte minimum                         |
+| Initial replication vs periodic repair under churn   | Section 2 shows surviving copies; separate maintenance tests prove periodic republishing and replica restoration                            |
+| At least 1000 simulated nodes, including Part 2      | Both named thousand-node scenarios below; they use the simulated transport, not 1000 containers                                             |
+| At least 80% statement coverage and race-clean tests | Full test run with coverage and -race; read the actual total from the generated profile                                                     |
+| Ownership, signatures and registry CLI               | Sections 3, 5 and optional 8B; show dns and decoded show ds; private keys stay private                                                      |
+| No fork and no rollback                              | Sections 6–7 and optional 8A; inspect history and actual bytes after each refusal                                                          |
+| Missing-history catch-up                             | Section 9 explanation plus focused tests; lecturer explicitly waived the live scenario                                                      |
+| Mutable pointer cache fix                            | C reads before/after update; targeted tests select non-replica readers and publishers                                                       |
+| Thread safety                                        | Explain mutex-protected state, validation/network fetches outside storage locks, and rechecking the current value before committing         |
+| Structured instrumentation                           | Lookup probe and outcome events; experiment JSONL logs and external Python analysis                                                         |
+| Two required experiments                             | Scalability vs network size and retrieval success vs packet loss; setup, seeds, variation, expectations and limitations                     |
+| Written report and administration                    | Group/members/repository, architecture/libraries, thread safety, limits, experiments; verify Canvas submission and review signup separately |
 
 ### Prepare test evidence before the presentation
 
 **S — normal shell in labs; these can take minutes:**
 
-~~~sh
+```sh
 go test -count=1 -v ./experiment ./registry/dht -run '^TestThousandNode(Network|Registry)$'
-~~~
+```
 
 Do not add -short: both large tests skip themselves in short mode.
 
 For complete verification:
 
-~~~sh
+```sh
 go test -count=1 -race -coverpkg=./... -coverprofile=/tmp/kademlia-review-coverage.out ./...
 go tool cover -func=/tmp/kademlia-review-coverage.out
 go vet ./...
-~~~
+```
 
 The full run already includes the two large tests. The first command is useful when
 showing them explicitly by name; running both is not necessary just to avoid skipping
@@ -670,15 +705,15 @@ Race detection covers executed paths, not every possible concurrent schedule.
 
 Focused catch-up/cache evidence:
 
-~~~sh
+```sh
 go test -count=1 -v ./registry/dht -run '^Test(MissingHistoryCatchUp|BehindNodeThatCannotFetchHistoryKeepsItsPointer|NonReplicaReadsLatestAfterPublication|PublisherReadsLatestWithoutKeepingAnExtraPointer)$'
-~~~
+```
 
 Focused Part 1 maintenance, integrity and concurrency evidence:
 
-~~~sh
+```sh
 go test -count=1 -v ./kademlia -run '^Test(FullBucketPingsLeastRecentlySeen|JoinLooksUpSelfThenRefreshesFartherBuckets|LookupParallelismAndProbeLogs|StoreValueRejectsMismatchedKey|LookupDataRejectsHashMismatch|ValueSizeLimitAtAllStoreEntryPoints|RepublishRestoresReplicaAfterChurnAndKeepsLocalValue|PeriodicReplicationStopsOnCancellation|ValueValidatorRechecksConcurrentUpdates)$'
-~~~
+```
 
 These checks are preparation/supporting evidence; do not spend the live review
 waiting for every long test unless requested.
@@ -703,44 +738,44 @@ Use the committed [scalability plot](../experiments/results/scalability.svg),
 
 ### Useful source files to open if asked
 
-| Topic | File |
-|---|---|
-| Startup, commands and configuration | [main.go](../main.go), [registry_cli.go](../registry_cli.go) |
-| Lookup/store and mutable validation hook | [kademlia.go](../kademlia/kademlia.go), [value.go](../kademlia/value.go) |
-| Joining and periodic maintenance | [maintenance.go](../kademlia/maintenance.go) |
-| RPCs and simulator | [network.go](../kademlia/network.go), [simnetwork.go](../kademlia/simnetwork.go) |
-| Owner/signature/history validation | [validate.go](../registry/validate.go), [records.go](../registry/records.go), [owners.go](../registry/owners.go) |
-| Catch-up/cache tests | [dht_test.go](../registry/dht/dht_test.go) |
-| Experiments and fitted/model curves | [experiment.go](../experiment/experiment.go), [analyze.py](../scripts/analyze.py) |
+| Topic                                    | File                                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Startup, commands and configuration      | [main.go](../main.go), [registry_cli.go](../registry_cli.go)                                                    |
+| Lookup/store and mutable validation hook | [kademlia.go](../kademlia/kademlia.go), [value.go](../kademlia/value.go)                                        |
+| Joining and periodic maintenance         | [maintenance.go](../kademlia/maintenance.go)                                                                   |
+| RPCs and simulator                       | [network.go](../kademlia/network.go), [simnetwork.go](../kademlia/simnetwork.go)                                |
+| Owner/signature/history validation       | [validate.go](../registry/validate.go), [records.go](../registry/records.go), [owners.go](../registry/owners.go) |
+| Catch-up/cache tests                     | [dht_test.go](../registry/dht/dht_test.go)                                                                     |
+| Experiments and fitted/model curves      | [experiment.go](../experiment/experiment.go), [analyze.py](../scripts/analyze.py)                               |
 
 ## 11. Quick oral checks for every group member
 
 Try answering before reading the right column.
 
-| Question | Answer to convey |
-|---|---|
-| Why does a matching file hash not prove who published it? | Anyone can hash/upload bytes. The trusted owner's signature authorizes the metadata containing that hash. |
-| Why have a mutable pointer and immutable records? | A stable name-derived key locates the changing head; content-addressed records and blobs retain older releases. |
-| Why is the pointer structured and signed instead of just a record hash? | The signature binds the domain, package, version and record reference; validators can check its identity and consistency with the referenced record. |
-| What makes an incoming STORE an update? | The receiver has a current accepted value under the same pointer key and compares the incoming value/history against it. |
-| Why repeat domain, package and version in pointer and record? | Those signed fields bind the object to its namespace and release; validation checks they agree. |
-| Why do versions need a total order? | Nodes need a consistent newer/older comparison for rollback checks. Labels without a defined order would not provide it. |
-| Why is 5 after 2 allowed but 3 after 5 rejected? | Gaps are allowed; moving the head backward is not. |
-| Why can 6 pointing to 2 be a fork when latest is 5? | Its history bypasses the exact record already accepted as the head. A larger number alone is insufficient. |
-| What if a behind node cannot fetch missing records? | It rejects that pointer update and keeps its old accepted pointer. |
-| Does every install obtain the globally newest release? | No. Non-replica read caching was fixed, but a replica that missed an update can still answer with an older accepted pointer. |
-| Why do all containers use port 8000? | They have different IP/network namespaces. Joined via names their shared bootstrap contact, not their own address. |
-| Does force disable security? | It skips publisher-side checks to exercise receiver validation; receivers still enforce their rules. |
-| Do we need a slide deck or a live catch-up setup? | The supplied spec/announcement does not require slides, and the announcement waives live catch-up. Be able to explain it and check any separate Canvas instructions. |
+| Question                                                                | Answer to convey                                                                                                                                                     |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Why does a matching file hash not prove who published it?               | Anyone can hash/upload bytes. The trusted owner's signature authorizes the metadata containing that hash.                                                            |
+| Why have a mutable pointer and immutable records?                       | A stable name-derived key locates the changing head; content-addressed records and blobs retain older releases.                                                      |
+| Why is the pointer structured and signed instead of just a record hash? | The signature binds the domain, package, version and record reference; validators can check its identity and consistency with the referenced record.                 |
+| What makes an incoming STORE an update?                                 | The receiver has a current accepted value under the same pointer key and compares the incoming value/history against it.                                             |
+| Why repeat domain, package and version in pointer and record?           | Those signed fields bind the object to its namespace and release; validation checks they agree.                                                                      |
+| Why do versions need a total order?                                     | Nodes need a consistent newer/older comparison for rollback checks. Labels without a defined order would not provide it.                                             |
+| Why is 5 after 2 allowed but 3 after 5 rejected?                        | Gaps are allowed; moving the head backward is not.                                                                                                                   |
+| Why can 6 pointing to 2 be a fork when latest is 5?                     | Its history bypasses the exact record already accepted as the head. A larger number alone is insufficient.                                                           |
+| What if a behind node cannot fetch missing records?                     | It rejects that pointer update and keeps its old accepted pointer.                                                                                                   |
+| Does every install obtain the globally newest release?                  | No. Non-replica read caching was fixed, but a replica that missed an update can still answer with an older accepted pointer.                                         |
+| Why do all containers use port 8000?                                    | They have different IP/network namespaces. Joined via names their shared bootstrap contact, not their own address.                                                   |
+| Does force disable security?                                            | It skips publisher-side checks to exercise receiver validation; receivers still enforce their rules.                                                                 |
+| Do we need a slide deck or a live catch-up setup?                       | The supplied spec/announcement does not require slides, and the announcement waives live catch-up. Be able to explain it and check any separate Canvas instructions. |
 
 ## 12. Finish and reset after the presentation
 
 Keep the output files visible until all comparisons are complete. Then end the
 remaining interactive nodes with exit, or use the cleanup script from S:
 
-~~~sh
+```sh
 scripts/demo-down.sh
-~~~
+```
 
 Cleanup removes the demo stack, shared owners file and temporary keys/downloads.
 The generated demo/files/file5.txt fixture remains in the repository directory.

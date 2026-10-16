@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestRunQuickWritesBothLogs(t *testing.T) {
+func TestRunQuickWritesAllLogs(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "results") // created on demand
 	if err := run([]string{"-quick", "-seeds", "1", "-workers", "1", "-out", dir}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"scalability.jsonl", "reliability.jsonl"} {
+	for _, name := range []string{"scalability.jsonl", "reliability.jsonl", "churn.jsonl"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || info.Size() == 0 {
 			t.Fatalf("%s missing or empty: %v", name, err)
@@ -39,6 +39,11 @@ func TestRunRejectsBadArguments(t *testing.T) {
 	}
 	if err := run([]string{"-no-such-flag"}); err == nil {
 		t.Fatal("unknown flag accepted")
+	}
+	for _, seeds := range []string{"0", "-1"} {
+		if err := run([]string{"-seeds", seeds, "-out", dir}); err == nil {
+			t.Fatalf("accepted non-positive seed count %s", seeds)
+		}
 	}
 	file := filepath.Join(dir, "file")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {

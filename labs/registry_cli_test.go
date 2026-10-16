@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"d7024e/experiment"
 	"d7024e/kademlia"
@@ -371,6 +372,101 @@ func TestPublishRejectsInvalidUpdates(t *testing.T) {
 	out := e.expect(6, "show example.com:tool", "example.com:tool has 2 versions")
 	if !strings.Contains(out, "1.1.0") || strings.Contains(out, "1.2.0") {
 		t.Fatalf("the chain changed: %q", out)
+	}
+}
+
+// Exercise the same command path as the demo with real UDP RPCs. Simulated
+// transports return Go errors directly; UDP must also carry replica refusals
+// back to the publisher without making --force bypass receiver validation.
+func TestPublishForceOverUDP(t *testing.T) {
+	e := newCLIEnv(t, 3)
+	contacts := make([]kademlia.Contact, len(e.nodes))
+	tables := make([]*kademlia.RoutingTable, len(e.nodes))
+	for i := range e.nodes {
+		port := reserveTestPort(t)
+		address := "127.0.0.1:" + strconv.Itoa(port)
+		me := kademlia.NewContact(idFromAddress(address), address)
+		table := kademlia.NewRoutingTable(me)
+		transport := kademlia.NewNetwork(me)
+		transport.Timeout = time.Second
+		transport.Retries = 0
+		node := kademlia.NewKademlia(table, transport)
+		node.SetLookupLogger(nil)
+		transport.AttachKademlia(node)
+		installRegistry(node)
+		if err := transport.Listen("127.0.0.1", port); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = transport.Close() })
+		e.nodes[i], contacts[i], tables[i] = node, me, table
+	}
+	for i, table := range tables {
+		for j, contact := range contacts {
+			if i != j {
+				table.AddContact(contact)
+			}
+		}
+	}
+	e.expect(0, "keygen example.com", "created private key")
+	e.write("first.bin", "first release")
+	e.write("second.bin", "second release")
+	e.expect(0, "publish --force example.com:tool:1.0.0 first.bin", "published")
+	e.expect(1, "publish --force --prev=1.0.0 example.com:tool:2.0.0 second.bin", "published")
+
+	stored := func(node *kademlia.Kademlia, key string) []byte {
+		for _, entry := range node.Entries() {
+			if entry.Key == key {
+				return entry.Value
+			}
+		}
+		return nil
+	}
+	pointerKey := registry.PointerKey("example.com", "tool")
+	before := make([][]byte, len(e.nodes))
+	for i, node := range e.nodes {
+		before[i] = stored(node, pointerKey)
+		if before[i] == nil {
+			t.Fatalf("UDP replica %d did not receive the valid latest pointer", i)
+		}
+	}
+	cases := []struct {
+		name, arguments, reason string
+	}{
+		{"rollback", "example.com:tool:1.5.0", "roll back"},
+		{"same-version fork", "example.com:tool:2.0.0", "fork"},
+		{"older-parent fork", "--prev=1.0.0 example.com:tool:3.0.0", "fork"},
+		{"same-version predecessor", "--prev=2.0.0 example.com:tool:2.0.0", "fork"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := "invalid publication: " + tc.name
+			e.write("invalid.bin", payload)
+			command := "publish " + tc.arguments + " invalid.bin"
+			e.expectOneLine(0, command, "publish failed:", "refusing to publish", tc.reason)
+			for i, node := range e.nodes {
+				if stored(node, registry.Hash([]byte(payload))) != nil {
+					t.Fatalf("UDP replica %d received a package refused by local preflight", i)
+				}
+			}
+			command = "publish --force " + tc.arguments + " invalid.bin"
+			out := e.expect(0, command, "updating the latest pointer")
+			if !strings.Contains(out, tc.reason) || !strings.Contains(out, "refused by 3 nodes") || strings.Contains(out, "refusing to publish") {
+				t.Fatalf("forced publication did not report a receiver refusal: %q", out)
+			}
+			t.Logf("%s\n%s", command, strings.TrimSpace(out))
+			for i, node := range e.nodes {
+				if !bytes.Equal(stored(node, registry.Hash([]byte(payload))), []byte(payload)) {
+					t.Fatalf("UDP replica %d did not receive the forced package upload", i)
+				}
+				if !bytes.Equal(stored(node, pointerKey), before[i]) {
+					t.Fatalf("UDP replica %d changed its latest pointer after an invalid forced update", i)
+				}
+			}
+		})
+	}
+	e.expect(2, "install example.com:tool:latest verified.bin", "2.0.0")
+	if got := e.read("verified.bin"); got != "second release" {
+		t.Fatalf("latest package after forced attempts = %q", got)
 	}
 }
 

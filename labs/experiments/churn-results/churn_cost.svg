@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 460" font-family="sans-serif" font-size="12">
+<rect width="720" height="460" fill="white"/>
+<text x="360.0" y="24" text-anchor="middle" font-size="15" font-weight="bold">Lookup cost after abrupt node departures (initial N=1000)</text>
+<line x1="70" y1="390.0" x2="700" y2="390.0" stroke="#e0e0e0"/>
+<text x="62" y="394.0" text-anchor="end">0</text>
+<line x1="70" y1="305.0" x2="700" y2="305.0" stroke="#e0e0e0"/>
+<text x="62" y="309.0" text-anchor="end">10</text>
+<line x1="70" y1="220.0" x2="700" y2="220.0" stroke="#e0e0e0"/>
+<text x="62" y="224.0" text-anchor="end">20</text>
+<line x1="70" y1="135.0" x2="700" y2="135.0" stroke="#e0e0e0"/>
+<text x="62" y="139.0" text-anchor="end">30</text>
+<line x1="70" y1="50.0" x2="700" y2="50.0" stroke="#e0e0e0"/>
+<text x="62" y="54.0" text-anchor="end">40</text>
+<line x1="70.0" y1="50" x2="70.0" y2="390" stroke="#f0f0f0"/>
+<text x="70.0" y="406" text-anchor="middle">0</text>
+<line x1="140.0" y1="50" x2="140.0" y2="390" stroke="#f0f0f0"/>
+<text x="140.0" y="406" text-anchor="middle">10</text>
+<line x1="280.0" y1="50" x2="280.0" y2="390" stroke="#f0f0f0"/>
+<text x="280.0" y="406" text-anchor="middle">30</text>
+<line x1="420.0" y1="50" x2="420.0" y2="390" stroke="#f0f0f0"/>
+<text x="420.0" y="406" text-anchor="middle">50</text>
+<line x1="630.0" y1="50" x2="630.0" y2="390" stroke="#f0f0f0"/>
+<text x="630.0" y="406" text-anchor="middle">80</text>
+<line x1="700.0" y1="50" x2="700.0" y2="390" stroke="#f0f0f0"/>
+<text x="700.0" y="406" text-anchor="middle">90</text>
+<rect x="70" y="50" width="630" height="340" fill="none" stroke="#444"/>
+<text x="385.0" y="430" text-anchor="middle">initial nodes crashed (%)</text>
+<text transform="translate(18 220.0) rotate(-90)" text-anchor="middle">logical RPC probes per lookup</text>
+<polyline points="70.0,275.0 140.0,266.4 280.0,239.4 420.0,196.6 630.0,101.6 700.0,162.6" fill="none" stroke="#1f77b4" stroke-width="2"/>
+<line x1="70.0" y1="276.3" x2="70.0" y2="273.7" stroke="#1f77b4"/>
+<circle cx="70.0" cy="275.0" r="3.5" fill="#1f77b4"/>
+<line x1="140.0" y1="269.4" x2="140.0" y2="263.4" stroke="#1f77b4"/>
+<circle cx="140.0" cy="266.4" r="3.5" fill="#1f77b4"/>
+<line x1="280.0" y1="242.7" x2="280.0" y2="236.1" stroke="#1f77b4"/>
+<circle cx="280.0" cy="239.4" r="3.5" fill="#1f77b4"/>
+<line x1="420.0" y1="200.9" x2="420.0" y2="192.3" stroke="#1f77b4"/>
+<circle cx="420.0" cy="196.6" r="3.5" fill="#1f77b4"/>
+<line x1="630.0" y1="115.4" x2="630.0" y2="87.7" stroke="#1f77b4"/>
+<circle cx="630.0" cy="101.6" r="3.5" fill="#1f77b4"/>
+<line x1="700.0" y1="181.4" x2="700.0" y2="143.8" stroke="#1f77b4"/>
+<circle cx="700.0" cy="162.6" r="3.5" fill="#1f77b4"/>
+<polyline points="70.0,390.0 140.0,378.1 280.0,346.7 420.0,296.5 630.0,168.7 700.0,191.1" fill="none" stroke="#d62728" stroke-width="2"/>
+<line x1="70.0" y1="390.0" x2="70.0" y2="390.0" stroke="#d62728"/>
+<circle cx="70.0" cy="390.0" r="3.5" fill="#d62728"/>
+<line x1="140.0" y1="379.5" x2="140.0" y2="376.7" stroke="#d62728"/>
+<circle cx="140.0" cy="378.1" r="3.5" fill="#d62728"/>
+<line x1="280.0" y1="348.9" x2="280.0" y2="344.5" stroke="#d62728"/>
+<circle cx="280.0" cy="346.7" r="3.5" fill="#d62728"/>
+<line x1="420.0" y1="300.7" x2="420.0" y2="292.4" stroke="#d62728"/>
+<circle cx="420.0" cy="296.5" r="3.5" fill="#d62728"/>
+<line x1="630.0" y1="183.3" x2="630.0" y2="154.1" stroke="#d62728"/>
+<circle cx="630.0" cy="168.7" r="3.5" fill="#d62728"/>
+<line x1="700.0" y1="206.4" x2="700.0" y2="175.7" stroke="#d62728"/>
+<circle cx="700.0" cy="191.1" r="3.5" fill="#d62728"/>
+<polyline points="70.0,340.2 140.0,340.2 280.0,338.3 420.0,330.6 630.0,256.1 700.0,194.1" fill="none" stroke="#2ca02c" stroke-width="2"/>
+<line x1="70.0" y1="341.9" x2="70.0" y2="338.6" stroke="#2ca02c"/>
+<circle cx="70.0" cy="340.2" r="3.5" fill="#2ca02c"/>
+<line x1="140.0" y1="341.9" x2="140.0" y2="338.5" stroke="#2ca02c"/>
+<circle cx="140.0" cy="340.2" r="3.5" fill="#2ca02c"/>
+<line x1="280.0" y1="340.6" x2="280.0" y2="336.1" stroke="#2ca02c"/>
+<circle cx="280.0" cy="338.3" r="3.5" fill="#2ca02c"/>
+<line x1="420.0" y1="333.3" x2="420.0" y2="327.9" stroke="#2ca02c"/>
+<circle cx="420.0" cy="330.6" r="3.5" fill="#2ca02c"/>
+<line x1="630.0" y1="272.4" x2="630.0" y2="239.8" stroke="#2ca02c"/>
+<circle cx="630.0" cy="256.1" r="3.5" fill="#2ca02c"/>
+<line x1="700.0" y1="212.8" x2="700.0" y2="175.4" stroke="#2ca02c"/>
+<circle cx="700.0" cy="194.1" r="3.5" fill="#2ca02c"/>
+<polyline points="70.0,390.0 140.0,385.9 280.0,377.2 420.0,365.3 630.0,291.5 700.0,226.2" fill="none" stroke="#9467bd" stroke-width="2"/>
+<line x1="70.0" y1="390.0" x2="70.0" y2="390.0" stroke="#9467bd"/>
+<circle cx="70.0" cy="390.0" r="3.5" fill="#9467bd"/>
+<line x1="140.0" y1="387.0" x2="140.0" y2="384.8" stroke="#9467bd"/>
+<circle cx="140.0" cy="385.9" r="3.5" fill="#9467bd"/>
+<line x1="280.0" y1="379.0" x2="280.0" y2="375.5" stroke="#9467bd"/>
+<circle cx="280.0" cy="377.2" r="3.5" fill="#9467bd"/>
+<line x1="420.0" y1="368.3" x2="420.0" y2="362.3" stroke="#9467bd"/>
+<circle cx="420.0" cy="365.3" r="3.5" fill="#9467bd"/>
+<line x1="630.0" y1="305.0" x2="630.0" y2="277.9" stroke="#9467bd"/>
+<circle cx="630.0" cy="291.5" r="3.5" fill="#9467bd"/>
+<line x1="700.0" y1="242.9" x2="700.0" y2="209.5" stroke="#9467bd"/>
+<circle cx="700.0" cy="226.2" r="3.5" fill="#9467bd"/>
+<line x1="82" y1="60" x2="110" y2="60" stroke="#1f77b4" stroke-width="2"/>
+<text x="116" y="64">FIND_NODE: all probes</text>
+<line x1="82" y1="77" x2="110" y2="77" stroke="#d62728" stroke-width="2"/>
+<text x="116" y="81">FIND_NODE: failed probes</text>
+<line x1="82" y1="94" x2="110" y2="94" stroke="#2ca02c" stroke-width="2"/>
+<text x="116" y="98">FIND_VALUE: all probes</text>
+<line x1="82" y1="111" x2="110" y2="111" stroke="#9467bd" stroke-width="2"/>
+<text x="116" y="115">FIND_VALUE: failed probes</text>
+<text x="70" y="452" font-size="11" fill="#555">Means over seeds; bars: +/- 1 seed standard deviation. No simulated timeout delay.</text>
+</svg>

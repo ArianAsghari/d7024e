@@ -1,0 +1,51 @@
+Three-node UDP --force demo, built from the current source
+Files, keys, logs and transcript: /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/kademlia-force-rjj2cbq0
+Building Go node...
+Started publisher and two replicas on 127.0.0.1 UDP ports 50570, 53156, 55149
+
+1. Valid updates succeed with --force
+publisher> keygen example.com
+created private key /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/kademlia-force-rjj2cbq0/keys-publisher/example.com
+registered example.com: kademlia-pk=yoiBeUiRvpIewFcI4D16BfWouliCKTDHzbxEXGk0OfA= (fingerprint 81a1:e267:d6dc:9310) in /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/kademlia-force-rjj2cbq0/owners.json
+publisher> publish --force example.com:tool:1.0.0 v1.txt
+published example.com:tool:1.0.0 (package 645dbf12…03c5, record 61d182f4…6bd0)
+publisher> publish --force --prev=1.0.0 example.com:tool:2.0.0 v2.txt
+published example.com:tool:2.0.0 (package e598bc26…d1cd, record 437a83e4…0c5d)
+
+2. Compare publisher refusal with replica refusal
+publisher> publish example.com:tool:1.5.0 v3.txt
+publish failed: refusing to publish example.com:tool:1.5.0: update would roll back to an older version: 1.5.0 is older than the current 2.0.0
+publisher> publish --force example.com:tool:1.5.0 v3.txt
+publish failed: updating the latest pointer: update would roll back to an older version: 1.5.0 is older than the current 2.0.0 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+publisher> publish example.com:tool:2.0.0 v3.txt
+publish failed: refusing to publish example.com:tool:2.0.0: update would fork the version history: version 2.0.0 already points at record 437a83e4…0c5d, not fc9c5e43…cb62
+publisher> publish --force example.com:tool:2.0.0 v3.txt
+publish failed: updating the latest pointer: update would fork the version history: version 2.0.0 already points at record 437a83e4…0c5d, not fc9c5e43…cb62 (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+publisher> publish --prev=1.0.0 example.com:tool:3.0.0 v3.txt
+publish failed: refusing to publish example.com:tool:3.0.0: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 61d182f4…6bd0) without meeting the current record 437a83e4…0c5d
+publisher> publish --force --prev=1.0.0 example.com:tool:3.0.0 v3.txt
+publish failed: updating the latest pointer: update would fork the version history: history of 3.0.0 runs through 1.0.0 (record 61d182f4…6bd0) without meeting the current record 437a83e4…0c5d (refused by 3 nodes); any replicas that accepted the latest pointer keep it
+
+3. Every node still installs the accepted version 2.0.0
+publisher> install example.com:tool:latest publisher-installed.txt
+installed example.com:tool 2.0.0 (35 bytes, package e598bc26…d1cd, latest) to publisher-installed.txt
+publisher> show example.com:tool
+example.com:tool has 2 versions (newest first)
+  2.0.0  record 437a83e4…0c5d  blob e598bc26…d1cd  (latest)
+  1.0.0  record 61d182f4…6bd0  blob 645dbf12…03c5
+replica-1> install example.com:tool:latest replica-1-installed.txt
+installed example.com:tool 2.0.0 (35 bytes, package e598bc26…d1cd, latest) to replica-1-installed.txt
+replica-1> show example.com:tool
+example.com:tool has 2 versions (newest first)
+  2.0.0  record 437a83e4…0c5d  blob e598bc26…d1cd  (latest)
+  1.0.0  record 61d182f4…6bd0  blob 645dbf12…03c5
+replica-2> install example.com:tool:latest replica-2-installed.txt
+installed example.com:tool 2.0.0 (35 bytes, package e598bc26…d1cd, latest) to replica-2-installed.txt
+replica-2> show example.com:tool
+example.com:tool has 2 versions (newest first)
+  2.0.0  record 437a83e4…0c5d  blob e598bc26…d1cd  (latest)
+  1.0.0  record 61d182f4…6bd0  blob 645dbf12…03c5
+
+PASS: valid forced updates succeed; invalid forced updates reach all three
+replicas and are rejected; all three still install the exact version 2 bytes.
+Transcript: /var/folders/l_/60j6t9wx3ys3x_rxwswhhn0c0000gn/T/kademlia-force-rjj2cbq0/transcript.txt

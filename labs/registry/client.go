@@ -26,7 +26,10 @@ type PublishOptions struct {
 	Version Version
 	Data    []byte
 	Prev    *Version
-	Force   bool
+	// Force skips publisher-side update validation, so an invalid update is
+	// uploaded and attempted. Receivers still validate it. An explicit Prev
+	// must resolve to an existing record before that record can be referenced.
+	Force bool
 }
 
 type PublishResult struct {
