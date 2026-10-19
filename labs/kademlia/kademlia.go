@@ -218,11 +218,24 @@ func (kademlia *Kademlia) Store(data []byte) (string, error) {
 	return key.String(), kademlia.StoreAt(key, data)
 }
 
+// storeOutcome is the result of one STORE RPC sent by StoreAt.
+type storeOutcome struct {
+	index   int
+	contact Contact
+	err     error
+}
+
 // StoreAt publishes data under an explicit key to the k closest nodes. Each
 // destination validates the pair through StoreValue, including this node when
 // it is among the k closest. Errors are joined; successful replicas are kept
 // even if another destination rejects the value. The caller can use StoreAt
 // to publish a mutable pointer without changing its key when the value changes.
+//
+// The STORE RPCs are sent at the same time and StoreAt waits for all of them,
+// so no RPC outlives the call and the elapsed time is that of the slowest
+// destination, not the sum over all destinations. Only this goroutine updates
+// the routing table, as in lookupRound. Errors are joined in distance order,
+// the same order as before, whatever order the replies arrive in.
 func (kademlia *Kademlia) StoreAt(key *KademliaID, data []byte) error {
 	if err := validateValueSize(data); err != nil {
 		return err
@@ -246,22 +259,40 @@ func (kademlia *Kademlia) StoreAt(key *KademliaID, data []byte) error {
 		storeErrors = append(storeErrors, lookupErr)
 	}
 
+	// One slot per destination keeps the errors in distance order.
+	destinationErrors := make([]error, len(contacts))
+	results := make(chan storeOutcome, len(contacts))
+	pending, local := 0, -1
 	for i := range contacts {
 		contact := contacts[i]
 		if contact.ID.Equals(kademlia.routingTable.me.ID) {
-			if err := kademlia.StoreValue(key, data); err != nil {
-				storeErrors = append(storeErrors, err)
-			}
+			local = i
 			continue
 		}
 		if kademlia.network == nil {
-			storeErrors = append(storeErrors, ErrNoNetwork)
+			destinationErrors[i] = ErrNoNetwork
 			continue
 		}
-		if err := kademlia.network.SendStoreMessage(&contact, key, cloneBytes(data)); err != nil {
-			storeErrors = append(storeErrors, fmt.Errorf("store on %s: %w", contact.Address, err))
+		pending++
+		go func(index int, contact Contact) {
+			results <- storeOutcome{index, contact, kademlia.network.SendStoreMessage(&contact, key, cloneBytes(data))}
+		}(i, contact)
+	}
+	if local >= 0 {
+		// This node's own copy is stored while the remote STOREs are in flight.
+		destinationErrors[local] = kademlia.StoreValue(key, data)
+	}
+	for ; pending > 0; pending-- {
+		outcome := <-results
+		if outcome.err != nil {
+			destinationErrors[outcome.index] = fmt.Errorf("store on %s: %w", outcome.contact.Address, outcome.err)
 		} else {
-			kademlia.routingTable.AddContact(contact)
+			kademlia.routingTable.AddContact(outcome.contact)
+		}
+	}
+	for _, err := range destinationErrors {
+		if err != nil {
+			storeErrors = append(storeErrors, err)
 		}
 	}
 
